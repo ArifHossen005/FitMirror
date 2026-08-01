@@ -1,0 +1,168 @@
+You are a senior full-stack software architect and technical writer.
+
+I am attaching a file called `FitMirror_Full_Product_Doc_v2.docx`. 
+
+**STEP 1 — Read the document first.**
+Read the entire attached product document carefully before doing anything else. Understand every feature, every module, every integration, and the full scope of the FitMirror SaaS platform.
+
+---
+
+**STEP 2 — Create `PROGRESS.md`**
+
+After reading, create a file called `PROGRESS.md`.
+
+This file must contain a complete, detailed, step-by-step build checklist for the entire FitMirror SaaS product. Follow this exact structure:
+
+- The product has 3 parts: **Backend (PHP Laravel + MySQL + Redis)**, **Frontend (React.js)**, and **Mission Control (Super Admin Panel)**
+- Break the entire build into **Phases** (e.g., Phase 1: Foundation, Phase 2: Core Features, Phase 3: Advanced Features, Phase 4: Integrations, Phase 5: Launch Readiness)
+- Under each Phase, list **every single task** as a checkbox: `- [ ] Task name`
+- Tasks must be granular — not "build auth system" but broken into: setup Laravel project, configure .env, create users table migration, build register API, build login API, implement JWT, write tests, etc.
+- Every feature from the product document must have corresponding tasks — Virtual Try-On Engine, Product Catalog, Campaign Manager, Loyalty Program, Customer Engagement, Store Management, Analytics, Subscription & Billing (SSLCommerz), Notification System, Integrations, Security, Mission Control Panel — everything.
+- When a task is completed in our future sessions, mark it as: `- [x] Task name`
+- At the top of the file, show an overall progress summary like:
+
+Progress Summary
+
+Total Tasks: 0
+Completed: 0
+Remaining: 0
+Progress: 0%
+
+
+- This file will be updated after every work session. Never remove tasks — only mark them done.
+
+---
+
+**STEP 3 — Create `DOCUMENTATION.md`**
+
+Also create a file called `DOCUMENTATION.md`.
+
+This is a living technical documentation file. It must have the following sections, pre-structured and ready to be filled in as we build:
+
+---
+
+### Structure of DOCUMENTATION.md:
+
+#### 1. Project Overview
+- What FitMirror is, tech stack summary, architecture overview (Backend / Frontend / Mission Control)
+
+#### 2. System Requirements
+- PHP version, Node version, MySQL version, Redis version, OS requirements, server specs
+
+#### 3. Local Development Setup
+- Step-by-step: clone repo, configure .env, install dependencies, run migrations, seed database, start queue worker, start Redis, start dev server
+- All commands must be exact, copy-pasteable bash commands
+
+#### 4. Project Structure
+- Full folder/file structure of the Laravel project and React project, explained
+
+#### 5. Environment Variables Reference
+- Every .env variable explained: what it is, example value, is it required
+
+#### 6. Database Schema
+- Every table: columns, types, relationships — to be filled as we build migrations
+
+#### 7. API Reference
+- Every API endpoint: Method, URL, Auth required, Request body, Response — to be filled as we build
+
+#### 8. Module Documentation
+- One section per module:
+  - Virtual Try-On Engine
+  - Product & Catalog Management
+  - Campaign Manager
+  - Loyalty & Rewards
+  - Customer Engagement
+  - Store & Staff Management
+  - Analytics & BI
+  - Subscription & Billing
+  - Notification System
+  - Integrations
+  - Security
+  - Mission Control
+
+#### 9. Deployment Guide — For Product Owner (SaaS Owner)
+- How to deploy FitMirror on a VPS/server
+- Configure domain, SSL, Nginx/Apache
+- Set up production .env
+- Run migrations in production
+- Configure queue workers & supervisor
+- Set up cron jobs (Laravel scheduler)
+- Configure SSLCommerz live keys
+- Monitor with logs
+
+#### 10. Tenant Onboarding Guide — For Product Owner
+- How a new shop owner signs up
+- How YOU (as Mission Control admin) receive the notification
+- How to review and approve/reject from Mission Control
+- What happens automatically after approval
+- How to manage plans, suspend, reactivate accounts
+
+#### 11. Subscriber Guide — For Shop Owners (Tenants)
+- How to purchase a plan (payment via bKash/Nagad/Card through SSLCommerz)
+- What happens after payment (pending approval)
+- How to set up their store after approval: add categories, upload products, configure kiosk
+- How to launch a campaign
+- How to set up loyalty program
+- How to view analytics
+- How to manage staff accounts
+
+#### 12. Kiosk Setup Guide
+- What hardware is needed (tablet/laptop + camera)
+- How to open the kiosk app (URL or installed app)
+- How to connect it to the store account
+- How to configure display settings
+
+#### 13. Troubleshooting
+- Common errors and fixes — to be filled as we build
+
+#### 14. Changelog
+- Version history — to be filled as we release
+
+---
+
+**STEP 4 — Important rules for our ongoing sessions:**
+
+After creating both files, tell me:
+1. Confirm you have read the full product document
+2. Show me the complete `PROGRESS.md` content
+3. Show me the complete `DOCUMENTATION.md` structure
+4. Tell me: "Ready. Give me the first task."
+
+In every future session:
+- When I say "do [task]", you will complete that task fully (write the actual code, migrations, API, etc.)
+- After completing it, you will update `PROGRESS.md` — mark the task as `- [x] done` and update the progress summary numbers
+- You will also update the relevant section of `DOCUMENTATION.md` with actual content (real commands, real API endpoints, real schema — not placeholders)
+- You will never skip a step or leave placeholder comments in code like `// TODO` or `// implement this`
+- All code must be production-quality: proper validation, error handling, meaningful variable names, following Laravel and React best practices
+- All bash commands in documentation must be exact and copy-pasteable
+- When you finish a task, end your response with:
+
+✅ Completed: [task name]
+📋 Progress: X / Y tasks done (Z%)
+📖 Docs updated: [section name]
+
+⏭️ Next task I will do:
+[next task name — one line description of what it involves]
+
+▶️ Type YES to continue, or tell me to skip / change.
+- You will NEVER proceed to the next task unless I reply **YES** (or approve in any clear way).
+- If I say **NO** or **SKIP** — skip that task, mark it `- [ ] SKIPPED` in PROGRESS.md, and show me the next planned task instead, again waiting for YES.
+- If I give a different instruction — follow it immediately, then return to the sequence.
+- You will NEVER do two tasks in one response. One task, then wait.
+- You will NEVER leave placeholder code like `// TODO`, `// implement this`, `// add logic here`. Every function must be fully implemented.
+- All code must follow Laravel 11 and React best practices: proper validation, error handling, meaningful names, clean structure.
+- All bash commands in documentation must be exact and copy-pasteable.
+
+
+The project uses:
+- Backend: PHP 8.2, Laravel 11, MySQL 8, Redis, Laravel Horizon, Laravel Scout + MeiliSearch
+- Frontend: React.js, Tailwind CSS, WebRTC (for kiosk camera)
+- Payment: SSLCommerz (Bangladesh)
+- Storage: AWS S3 or Cloudflare R2
+- Email: Amazon SES
+- SMS: Bangladesh local SMS gateway
+- Monitoring: Sentry + Laravel Telescope
+- Architecture: Multi-tenant SaaS, API-first, Role-based access control
+
+Now begin. Read the document, create both files, and wait for my first task.
+

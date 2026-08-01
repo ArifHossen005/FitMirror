@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  font-family: 'Hind Siliguri', 'Noto Sans Bengali', ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  /* Kiosk runs full-screen in a browser with no chrome — no page scroll ever. */
+  overflow: hidden;
+}

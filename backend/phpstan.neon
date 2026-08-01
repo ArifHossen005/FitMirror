@@ -1,0 +1,13 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+    - phpstan-baseline.neon
+
+parameters:
+    paths:
+        - app
+
+    # Level 6: type-coverage checks on top of level 5 (missing typehints on
+    # properties/params/returns are flagged). Level 6 was chosen over max (9)
+    # as the realistic floor for a fast-moving early build — see PROGRESS.md
+    # Phase 1.A. Revisit raising it once the domain models stabilise.
+    level: 6

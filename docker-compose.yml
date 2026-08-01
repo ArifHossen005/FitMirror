@@ -1,0 +1,135 @@
+name: fitmirror
+
+services:
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fitmirror-app
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./backend:/var/www/html
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      REDIS_HOST: redis
+      MEILISEARCH_HOST: http://meilisearch:7700
+      MAIL_HOST: mailhog
+      MAIL_PORT: 1025
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - fitmirror
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: fitmirror-nginx
+    restart: unless-stopped
+    ports:
+      - "8000:80"
+    volumes:
+      - ./backend:/var/www/html
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - app
+    networks:
+      - fitmirror
+
+  # Queue worker — runs the same queue list documented in DOCUMENTATION.md
+  # §2.2.1 / Decision D-01, so behaviour matches the Windows dev host exactly.
+  queue:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fitmirror-queue
+    restart: unless-stopped
+    working_dir: /var/www/html
+    command: php artisan queue:work --queue=high,default,notifications,media,analytics,campaigns --tries=3 --timeout=120
+    volumes:
+      - ./backend:/var/www/html
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      REDIS_HOST: redis
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - fitmirror
+
+  mysql:
+    image: mysql:8.4
+    container_name: fitmirror-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: fitmirror
+      MYSQL_USER: fitmirror
+      MYSQL_PASSWORD: fitmirror
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --default-time-zone=+00:00
+    ports:
+      - "3307:3306"
+    volumes:
+      - fitmirror-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - fitmirror
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: fitmirror-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - fitmirror-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - fitmirror
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.50
+    container_name: fitmirror-meilisearch
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${MEILISEARCH_KEY:-fitmirror-local-master-key-change-me}
+      MEILI_ENV: development
+    ports:
+      - "7700:7700"
+    volumes:
+      - fitmirror-meili-data:/meili_data
+    networks:
+      - fitmirror
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: fitmirror-mailhog
+    restart: unless-stopped
+    ports:
+      - "8025:8025" # web UI
+      - "1025:1025" # smtp
+    networks:
+      - fitmirror
+
+networks:
+  fitmirror:
+    driver: bridge
+
+volumes:
+  fitmirror-mysql-data:
+  fitmirror-redis-data:
+  fitmirror-meili-data:

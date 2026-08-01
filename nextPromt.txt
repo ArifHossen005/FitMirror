@@ -1,0 +1,59 @@
+
+FitMirror SaaS project — continuing an existing build.
+
+PROJECT: d:\New folder\my-up-yosuite\FitMirror
+
+STEP 1 — Read these first, don't skip:
+  - PROGRESS.md   (829-task checklist, Decision Log D-01–D-10 at top)
+  - DOCUMENTATION.md (living technical docs, 14 sections)
+
+Current state: 78/829 tasks done (9.4%). Phase 1.A (backend foundation) is
+100% complete and verified. Phase 1.B (frontend foundation) core is done:
+4 Vite+React 19+TS apps (dashboard/kiosk/portal/mission-control) scaffolded
+as an npm workspace, plus packages/ui (design tokens + 13 shared
+components), packages/api (Axios client, TanStack Query, Zustand stores),
+packages/i18n (bn/en). All four apps build clean, ESLint workspace-wide is
+clean. Read the Decision Log before touching anything — especially D-06
+(Laravel 12 not 11), D-09 (no Repository pattern), D-10 (React 19 /
+react-router-dom v7, and a tracked-but-inapplicable react-router CVE).
+
+STEP 2 — Verify before trusting: PROGRESS.md checkboxes were reconciled
+against the actual disk state as of 2026-08-01, but always spot-check with
+real commands (composer.lock, npm ls, grep) before assuming something
+marked [x] still holds — don't take a checkbox as proof by itself.
+
+HOW I WANT YOU TO WORK (same as before):
+  - Batches of 20 tasks. Do NOT stop and ask "continue?" after each task —
+    move through the whole batch, then update PROGRESS.md (checkboxes +
+    summary numbers) and the relevant DOCUMENTATION.md sections with REAL
+    content (real commands, real code, real config) before ending the turn.
+  - NEVER leave // TODO, stub functions, or placeholder logic. Every
+    function fully implemented with validation and error handling.
+  - After writing code, actually run it — build, lint, test — don't just
+    write files and assume they work. This session caught multiple real
+    bugs (missing Sanctum install, unregistered service provider, a 500 on
+    unauthenticated requests, a TypeScript peer-dependency conflict) by
+    verifying, not by inspection alone.
+  - If a package/library resolves to a newer major version than the spec
+    says (this happened with Laravel 11→12 and React 18→19), don't fight
+    it if the newer version is the only installable/current option —
+    record a Decision (D-11, D-12, ...) explaining why, then proceed.
+  - Tell me clearly if you hit a real blocker or must deviate from spec.
+
+STEP 3 — Next task: finish the rest of Phase 1.B, then move to Phase 1.C.
+Per PROGRESS.md, the remaining Phase 1.B items are:
+  - packages/ui: FileUploader (drag-drop + progress), EmptyState, Skeleton
+    loaders, ErrorState
+  - Shared Chart component wrapper (Recharts) for analytics
+  - AppShell (dashboard sidebar/topbar/breadcrumbs), KioskShell (full-screen,
+    no chrome), PortalShell (mobile-first), MissionShell layouts
+  - Global ErrorBoundary + Sentry browser SDK wired into each of the 4 apps
+  - Vitest + React Testing Library setup with a sample passing test per app
+  - Playwright E2E harness with a smoke test per app
+
+Then Phase 1.C — Mission Control Foundation (super_admins table/model,
+super_admin auth guard, routes/api_mission.php, EnsureSuperAdmin middleware,
+super admin seeder, Mission Control login page shell).
+
+Start now: read the files, verify current state, then continue with the
+next batch of 20. 

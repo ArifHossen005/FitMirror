@@ -1,0 +1,61 @@
+# --- Dependencies ---
+/backend/vendor/
+node_modules/
+/frontend/**/node_modules/
+
+# --- Environment & secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!**/lang/**/*.key
+auth.json
+
+# --- Laravel runtime ---
+/backend/storage/*.key
+/backend/storage/app/public/*
+!/backend/storage/app/public/.gitignore
+/backend/storage/framework/cache/data/*
+/backend/storage/framework/sessions/*
+/backend/storage/framework/testing/*
+/backend/storage/framework/views/*
+/backend/storage/logs/*
+!/backend/storage/**/.gitignore
+/backend/bootstrap/cache/*
+!/backend/bootstrap/cache/.gitignore
+/backend/public/storage
+/backend/public/hot
+/backend/.phpunit.result.cache
+/backend/.phpunit.cache/
+
+# --- Frontend build output ---
+/frontend/**/dist/
+/frontend/**/build/
+/frontend/**/.vite/
+*.local
+
+# --- Editors & OS ---
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.recommended.json
+.fleet/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Logs & temp ---
+*.log
+npm-debug.log*
+yarn-error.log*
+/backend/storage/debugbar/
+
+# --- Local tooling ---
+/backend/.php-cs-fixer.cache
+/backend/.pint.cache
+/backend/phpstan.cache/
+coverage/
+.nyc_output/
