@@ -35,6 +35,11 @@ auth.json
 /frontend/**/.vite/
 *.local
 
+# --- Playwright ---
+/frontend/playwright-report/
+/frontend/test-results/
+/frontend/blob-report/
+
 # --- Editors & OS ---
 .idea/
 .vscode/*

@@ -10,8 +10,9 @@ export interface SelectOption {
 
 export interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
   label?: string;
-  error?: string;
-  hint?: string;
+  // See Input.tsx's InputProps for why this is `| undefined`, not just `?`.
+  error?: string | undefined;
+  hint?: string | undefined;
   options: SelectOption[];
   placeholder?: string;
 }

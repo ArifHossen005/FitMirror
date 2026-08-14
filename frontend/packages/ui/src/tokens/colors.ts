@@ -64,3 +64,12 @@ export const colors = {
     950: '#020617',
   },
 } as const;
+
+/** Default chart series palette — brand first, then semantic colors, so a chart with up to 5 series never needs an explicit color prop (see components/Chart.tsx). */
+export const chartPalette = [
+  colors.brand[500],
+  colors.info[500],
+  colors.success[500],
+  colors.warning[500],
+  colors.danger[500],
+] as const;

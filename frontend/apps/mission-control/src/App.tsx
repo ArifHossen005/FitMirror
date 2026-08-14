@@ -8,6 +8,11 @@ import { BrowserRouter } from 'react-router-dom';
 
 import { AppRoutes } from './routes';
 
+/**
+ * No shell wraps <AppRoutes/> directly here — /login must render without
+ * MissionShell's chrome, so shell-wrapping happens per-route inside
+ * routes/ProtectedLayout.tsx instead of once at the app root.
+ */
 export default function App() {
   const [queryClient] = useState(createQueryClient);
   const [i18n] = useState(createI18n);

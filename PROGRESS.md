@@ -9,14 +9,14 @@
 
 ```
 Total Tasks: 829
-Completed:   78
-Remaining:   751
-Progress:    9.41%
+Completed:   132
+Remaining:   697
+Progress:    15.92%
 ```
 
-**Last updated:** 2026-08-01
-**Current phase:** Phase 1 — Foundation
-**Next task:** Phase 1.B → FileUploader, EmptyState/Skeleton/ErrorState, Chart wrapper, AppShell/KioskShell/PortalShell/MissionShell layouts, ErrorBoundary + Sentry browser SDK, Vitest + Playwright harnesses
+**Last updated:** 2026-08-14
+**Current phase:** Phase 2 — Multi-Tenancy, Authentication & RBAC (2.A and 2.B complete)
+**Next task:** Phase 2.C → RBAC & Audit (permission matrix, `spatie/laravel-permission` role seeding, policies, staff invite/CRUD, activity log, impersonation)
 
 ---
 
@@ -36,6 +36,9 @@ Decisions that shape the build, recorded so they are not re-litigated later.
 | D-10 | 2026-08-01 | **React 19.2 and react-router-dom v7 (declarative mode), not React 18 / React Router v6** as the product document specifies. TypeScript pinned to `~5.7.3` rather than the `~6.0.2` `create-vite` selected, because `react-i18next`'s peer range is `typescript@^5`. | `npm create vite@latest -- --template react-ts` installs whatever is current on the npm registry — React 19.2 and Vite 8 at the time Phase 1.B was built. React Router v7's declarative mode (`BrowserRouter`/`Routes`/`Route`) is API-compatible with v6 usage, so the "v6 route trees" checklist language still describes the code shape accurately. | All four apps and every `packages/*` workspace pin `react`/`react-dom` `^19.2.8`. `react-router-dom` route trees use the same declarative API a v6 codebase would. **Known accepted risk:** `react-router-dom@7.18.2` (latest on the registry as of this decision) carries a high-severity advisory, GHSA-qwww-vcr4-c8h2 (RSC-mode CSRF bypass) — FitMirror's apps use plain client-side `BrowserRouter`, never RSC/server actions, so this vector doesn't apply to the current codebase. Re-run `npm audit` before every release and upgrade the moment a patched version ships. |
 | D-09 | 2026-08-01 | **No `BaseRepository` class or Repository pattern.** Instead: thin controllers, Eloquent models carry query scopes, and a `BaseService` (`app/Services/BaseService.php`) is the home for multi-step or transactional business logic. | The Repository pattern re-implements what Eloquent's query builder already is — an abstraction over the query builder abstraction. It buys testability that Eloquent already provides via model factories and `RefreshDatabase`, at the cost of a parallel interface to maintain for every model. Modern Laravel practice (and Laravel 12's own conventions) favours scopes + services over repositories. | Every module's service layer extends `BaseService`. Reusable query logic goes in named local scopes on the model (`Product::published()`, `Tenant::active()`), not in a repository class. See DOCUMENTATION.md §4.4. |
 | D-08 | 2026-08-01 | **Laravel Sanctum was not actually installed**, despite the prior session's summary claiming 16 packages including Sanctum. `composer.json`/`composer.lock` had no `laravel/sanctum` entry, yet `routes/api.php` already referenced `auth:sanctum` middleware — that route would have failed at runtime. Installed now via `composer require laravel/sanctum:"^4.2" --ignore-platform-req=ext-pcntl --ignore-platform-req=ext-posix` (same pcntl workaround as Horizon, since Sanctum's tree pulls in Horizon as an existing lock constraint). | Discovered during the Phase 1 disk-vs-checklist reconciliation ordered at the start of this session — never take a prior session's summary as verified fact; always check `composer.lock`. | Treat every "already installed" claim from an old session summary as unverified until `composer.lock` / `vendor/` is actually inspected. |
+| D-11 | 2026-08-14 | **Every `packages/*` workspace gets its own `tsconfig.json`** (extending `tsconfig.base.json`), even packages with no app-level build step of their own. | `packages/ui` had none, and its `.tsx` files failed under Vitest with `ReferenceError: React is not defined` — not in the real `vite build` (which routes every file through `@vitejs/plugin-react`'s babel transform regardless of tsconfig), only under Vitest's SSR module runner, which falls back to esbuild's own TS/JSX transform and resolves JSX mode (`automatic` vs classic) by walking up to the nearest `tsconfig.json` on disk. With none present, esbuild silently picked classic mode. | Confirmed by adding `packages/ui/tsconfig.json` (later also `packages/api`, `packages/i18n`) — `npm run test --workspaces` went from a hard failure to 4/4 apps passing with no other config changes. Any new `packages/*` workspace must get a `tsconfig.json` the moment it contains `.tsx`, even if nothing outside Vitest currently proves the gap. |
+| D-12 | 2026-08-14 | **`phpstan.neon` sets `parameters.parseModelCastsMethod: true`.** Off by default in Larastan. | Every FitMirror model declares casts via Laravel 12's `protected function casts(): array` method (never the legacy `protected $casts` property, per the D-06 convention) — without this flag Larastan can't see those casts at all. It silently fell back to typing every cast attribute (enum casts, `datetime` casts, all of it) as plain `string`, which only became visible once `SuperAdmin::$role`/`$status` (the project's first enum casts) produced `identical.alwaysFalse` and `method.nonObject` false positives across the model *and* every controller reading it. | Larastan analysis (`./vendor/bin/phpstan analyse`) now correctly resolves `$role`/`$status` to their enum types and `last_login_at`/`two_factor_confirmed_at` to `Carbon`. Re-verify this flag survives any future Larastan upgrade — it is easy for a fresh `phpstan.neon` regeneration to drop it and reintroduce silent cast blindness project-wide. |
+| D-13 | 2026-08-14 | **`TenantScope` fails closed (no active tenant context ⇒ zero rows), and three specific auth code paths deliberately bypass it: `App\Models\PersonalAccessToken::tokenable()` (a custom Sanctum token model registered via `Sanctum::usePersonalAccessTokenModel()`), `App\Auth\TenantUnawareUserProvider` (registered as the `users` auth provider's driver in place of the default `eloquent` one), and `LoginService`'s own initial email lookup (`User::withoutTenantScope()`).** | Building Phase 2.B's login/2FA feature tests caught two real, systemic bugs that inspection alone would have missed: (1) `LoginService`'s `User::query()->where('email', ...)` returned nothing for *every* login attempt, because no tenant context exists at the exact moment login is discovering which tenant a user belongs to; (2) every already-authenticated `auth:sanctum` request against a tenant `User` also failed — Sanctum resolves a token's owner via a `MorphTo` relation that, like any Eloquent relation query, inherits the model's global scopes, so `$accessToken->tokenable` silently resolved to `null`. Laravel's password-reset broker (`Illuminate\Auth\EloquentUserProvider`) has the exact same problem. | Authentication, by definition, must resolve a user's identity *before* their tenant can be known — scoping can only apply to business-data queries that happen *after* identity is established. The three bypasses above are the complete, audited list of legitimate exceptions; any *new* code that looks up a `User` (or another `BelongsToTenant` model) without going through an authenticated request's already-resolved tenant context should be treated as a bug, not a precedent to copy. See DOCUMENTATION.md §4.4.4 and the class-level docblocks on all three files for the full reasoning. |
 
 ### Rules arising from D-01
 
@@ -160,32 +163,32 @@ Decisions that shape the build, recorded so they are not re-litigated later.
 - [x] Build shared UI components — Modal, Drawer, Tooltip, Popover, Tabs
 - [x] Build shared UI components — DataTable with sorting, pagination, and filters
 - [x] Build shared UI components — Toast/notification system
-- [ ] Build shared UI components — FileUploader with drag-drop and progress
-- [ ] Build shared UI components — EmptyState, Skeleton loaders, ErrorState
-- [ ] Build shared Chart components wrapper (Recharts) for analytics
-- [ ] Build `AppShell` layout for dashboard (sidebar, topbar, breadcrumbs)
-- [ ] Build `KioskShell` full-screen layout with no browser chrome
-- [ ] Build `PortalShell` mobile-first layout for customers
-- [ ] Build `MissionShell` layout for super admin
-- [ ] Add global ErrorBoundary + Sentry browser SDK per app
+- [x] Build shared UI components — FileUploader with drag-drop and progress
+- [x] Build shared UI components — EmptyState, Skeleton loaders, ErrorState
+- [x] Build shared Chart components wrapper (Recharts) for analytics — `TrendLineChart`, `TrendAreaChart`, `ComparisonBarChart`
+- [x] Build `AppShell` layout for dashboard (sidebar, topbar, breadcrumbs)
+- [x] Build `KioskShell` full-screen layout with no browser chrome
+- [x] Build `PortalShell` mobile-first layout for customers
+- [x] Build `MissionShell` layout for super admin
+- [x] Add global ErrorBoundary + Sentry browser SDK per app — `Sentry.ErrorBoundary` + `initSentry()` wired into all four apps' `main.tsx`, no-ops without `VITE_SENTRY_DSN`
 - [x] Configure i18n (react-i18next) with `bn` default and `en` fallback
 - [x] Extract all base UI strings into `bn`/`en` translation files — `packages/i18n` `common` namespace (nav, actions, state, auth); grows per-module as pages are built
 - [x] Add environment config handling (`VITE_API_URL`, `VITE_SENTRY_DSN`, etc.)
 - [x] Configure production build output and asset hashing for all four apps
-- [ ] Add Vitest + React Testing Library setup with a sample passing test
-- [ ] Add Playwright E2E harness with a smoke test per app
+- [x] Add Vitest + React Testing Library setup with a sample passing test — one per app (`NotFound.test.tsx`), `packages/ui` given its own `tsconfig.json` so the JSX transform resolves correctly under Vitest's SSR module runner
+- [x] Add Playwright E2E harness with a smoke test per app — shared `playwright.config.ts` (4 projects, 4 `webServer` entries), verified with real `npx playwright test` runs (9-10 passing)
 
 ## 1.C Mission Control Foundation
 
-- [ ] Create `super_admins` table migration (name, email, password, 2FA secret, role, status)
-- [ ] Create `SuperAdmin` model with separate `super_admin` auth guard
-- [ ] Configure `config/auth.php` with `super_admin` guard and provider
-- [ ] Create `routes/api_mission.php` mounted at `/api/v1/mission` with dedicated middleware group
-- [ ] Create `EnsureSuperAdmin` middleware
-- [ ] Create super admin seeder with credentials pulled from `.env`
-- [ ] Add per-route super-admin permission enum (tenants, plans, billing, ops, support)
-- [ ] Build Mission Control login page shell in `apps/mission-control`
-- [ ] Verify Mission Control app boots and reaches `/api/v1/mission/health`
+- [x] Create `super_admins` table migration (name, email, password, 2FA secret, role, status)
+- [x] Create `SuperAdmin` model with separate `super_admin` auth guard
+- [x] Configure `config/auth.php` with `super_admin` guard and provider
+- [x] Create `routes/api_mission.php` mounted at `/api/v1/mission` with dedicated middleware group — registered via a `then()` callback in `bootstrap/app.php` since `withRouting()` only accepts one `api:` file
+- [x] Create `EnsureSuperAdmin` middleware — rejects a suspended account even with a structurally valid token
+- [x] Create super admin seeder with credentials pulled from `.env` — `SUPER_ADMIN_NAME`/`_EMAIL`/`_PASSWORD`, idempotent via `firstOrNew`, never overwrites an existing password on re-run
+- [x] Add per-route super-admin permission enum (tenants, plans, billing, ops, support) — `SuperAdminPermission` + `SuperAdminRole::permissions()`
+- [x] Build Mission Control login page shell in `apps/mission-control` — real working login form (client-side validation, loading/error states), not just static markup; scope naturally extended to a matching `POST /api/v1/mission/login` + `/logout` API since a "shell" with no reachable backend would just be dead code
+- [x] Verify Mission Control app boots and reaches `/api/v1/mission/health` — verified two ways: `php artisan test` (14 backend feature tests) and a live full-stack Playwright run (real `php artisan serve` + real `vite` dev server, real login, real token, page reload preserves session)
 
 ---
 
@@ -193,46 +196,46 @@ Decisions that shape the build, recorded so they are not re-litigated later.
 
 ## 2.A Multi-Tenancy Core (Backend)
 
-- [ ] Document the tenancy strategy decision (single database, `tenant_id` discriminator, row-level isolation)
-- [ ] Create `tenants` table migration (name, slug, subdomain, custom_domain, owner_id, status, trial_ends_at, plan_id, settings JSON, timestamps, soft deletes)
-- [ ] Create `Tenant` model with casts, status enum, and relationships
-- [ ] Create `TenantStatus` enum (pending, trial, active, suspended, expired, rejected)
-- [ ] Build `BelongsToTenant` trait applying a global scope and auto-filling `tenant_id`
-- [ ] Build `TenantScope` global Eloquent scope
-- [ ] Build `TenantContext` singleton service (set, get, forget, runAs)
-- [ ] Build `ResolveTenant` middleware resolving tenant by subdomain, custom domain, or authenticated user
-- [ ] Build `EnsureTenantIsActive` middleware blocking suspended/expired tenants with a clear error payload
-- [ ] Add tenant-aware cache key prefixing helper
-- [ ] Add tenant-aware queue job base class carrying tenant context
-- [ ] Add tenant-aware storage path resolver (`tenants/{tenant_id}/...`)
-- [ ] Write feature tests proving cross-tenant data leakage is impossible on every scoped model
-- [ ] Create tenant provisioning service (create tenant, owner user, default roles, default store, default settings)
-- [ ] Create tenant teardown/soft-delete service with data retention rules
+- [x] Document the tenancy strategy decision (single database, `tenant_id` discriminator, row-level isolation) — DOCUMENTATION.md §4.4.4
+- [x] Create `tenants` table migration (name, slug, subdomain, custom_domain, owner_id, status, trial_ends_at, plan_id, settings JSON, timestamps, soft deletes) — `plan_id` intentionally has no FK yet (`plans` doesn't exist until Phase 3.A)
+- [x] Create `Tenant` model with casts, status enum, and relationships
+- [x] Create `TenantStatus` enum (pending, trial, active, suspended, expired, rejected)
+- [x] Build `BelongsToTenant` trait applying a global scope and auto-filling `tenant_id`
+- [x] Build `TenantScope` global Eloquent scope — **fails closed**: no active context = zero rows, not every tenant's rows (a deliberate safety choice found and fixed via a failing test — see §4.4.4)
+- [x] Build `TenantContext` singleton service (set, get, forget, runAs)
+- [x] Build `ResolveTenant` middleware resolving tenant by subdomain, custom domain, or authenticated user — also handles the `X-Tenant` header dev/staging stand-in
+- [x] Build `EnsureTenantIsActive` middleware blocking suspended/expired tenants with a clear error payload
+- [x] Add tenant-aware cache key prefixing helper — `App\Support\TenantCacheKey`
+- [x] Add tenant-aware queue job base class carrying tenant context — `App\Jobs\TenantAwareJob`
+- [x] Add tenant-aware storage path resolver (`tenants/{tenant_id}/...`) — `App\Support\TenantStorage`
+- [x] Write feature tests proving cross-tenant data leakage is impossible on every scoped model — `tests/Feature/Tenancy/*` (12 tests), against a throwaway fixture model since no real tenant-owned business table exists until Phase 2.B
+- [ ] Create tenant provisioning service (create tenant, owner user, default roles, default store, default settings) — **blocked**: needs `users.tenant_id` (2.B), roles (2.C), `stores` (4.A). Building it now would mean faking those dependencies; lands with Phase 2.B's registration endpoint instead. See DOCUMENTATION.md §4.4.4.
+- [ ] Create tenant teardown/soft-delete service with data retention rules — same blocker as above
 
 ## 2.B Authentication (Backend)
 
-- [ ] Create `users` table migration (tenant_id, store_id, name, email, phone, password, avatar, locale, status, last_login_at, two_factor fields)
-- [ ] Create `User` model with Sanctum, roles, tenant scope, and soft deletes
-- [ ] Build shop-owner registration API `POST /api/v1/auth/register` with validation
-- [ ] Trigger tenant provisioning + `TenantRegistered` event on registration
-- [ ] Build email verification flow (signed URL, resend endpoint, verified middleware)
-- [ ] Build login API `POST /api/v1/auth/login` issuing Sanctum tokens with abilities
-- [ ] Build logout API `POST /api/v1/auth/logout` revoking the current token
-- [ ] Build `GET /api/v1/auth/me` returning user, tenant, plan, permissions, and limits
-- [ ] Build forgot-password API with throttled token email
-- [ ] Build reset-password API with token validation and password rules
-- [ ] Build change-password API requiring current password
-- [ ] Build profile update API (name, phone, avatar, locale, notification prefs)
-- [ ] Implement password policy (min 10 chars, mixed case, number, symbol, breach check)
-- [ ] Implement login throttling and progressive account lockout after failed attempts
-- [ ] Create `login_attempts` table and record IP, user agent, and outcome
-- [ ] Build active session/device listing API and revoke-session endpoint
-- [ ] Implement TOTP 2FA — enable, QR provisioning, confirm, disable endpoints
-- [ ] Generate and store hashed 2FA recovery codes with regenerate endpoint
-- [ ] Enforce mandatory 2FA for tenant owners and all super admins
-- [ ] Build 2FA challenge step in the login flow
-- [ ] Build customer OTP authentication (phone) for the customer portal
-- [ ] Write feature tests for the entire auth surface
+- [x] Create `users` table migration (tenant_id, store_id, name, email, phone, password, avatar, locale, status, last_login_at, two_factor fields) — extends the default scaffold migration; `store_id` has no FK yet (`stores` doesn't exist until Phase 4.A), same pattern as `tenants.plan_id`
+- [x] Create `User` model with Sanctum, roles, tenant scope, and soft deletes — "roles" here means BelongsToTenant + `isTenantOwner()`; real Spatie roles are Phase 2.C
+- [x] Build shop-owner registration API `POST /api/v1/auth/register` with validation
+- [x] Trigger tenant provisioning + `TenantRegistered` event on registration — `RegistrationService`, narrower than the full "provisioning service" still deferred from Phase 2.A (no roles/store to seed yet)
+- [x] Build email verification flow (signed URL, resend endpoint, verified middleware)
+- [x] Build login API `POST /api/v1/auth/login` issuing Sanctum tokens with abilities
+- [x] Build logout API `POST /api/v1/auth/logout` revoking the current token
+- [x] Build `GET /api/v1/auth/me` returning user, tenant, plan, permissions, and limits — `plan`/`limits`/`permissions` are honestly `null`/`[]`: `plans` (Phase 3.A) and real roles (Phase 2.C) don't exist yet
+- [x] Build forgot-password API with throttled token email
+- [x] Build reset-password API with token validation and password rules
+- [x] Build change-password API requiring current password
+- [x] Build profile update API (name, phone, avatar, locale, notification prefs) — notification prefs excluded: `notification_preferences` doesn't exist until Phase 9.A
+- [x] Implement password policy (min 10 chars, mixed case, number, symbol, breach check) — `Password::defaults()`, one policy shared by every password rule in the app
+- [x] Implement login throttling and progressive account lockout after failed attempts — `throttle:auth` (5/min) plus a separate, longer-horizon lockout keyed on consecutive failures since the last success
+- [x] Create `login_attempts` table and record IP, user agent, and outcome
+- [x] Build active session/device listing API and revoke-session endpoint
+- [x] Implement TOTP 2FA — enable, QR provisioning, confirm, disable endpoints
+- [x] Generate and store hashed 2FA recovery codes with regenerate endpoint
+- [x] Enforce mandatory 2FA for tenant owners and all super admins — tenant owners: enforced and tested (`EnsureTwoFactorIsEnabled`). Super admins: **not yet enforced** — Mission Control has no self-service 2FA setup flow of its own, so enforcing now would permanently lock every super admin out with no way to comply; lands once Mission Control grows its own `/2fa/*` endpoints
+- [x] Build 2FA challenge step in the login flow
+- [ ] Build customer OTP authentication (phone) for the customer portal — **blocked**: needs the `customers` table (Phase 9.A), which doesn't exist yet. Portal auth is a distinct identity from tenant Users/SuperAdmins; building it now would mean inventing the customers schema ahead of its own phase
+- [x] Write feature tests for the entire auth surface — 46 tests across 9 files (`tests/Feature/Auth/*`), all passing; caught and fixed two real bugs along the way (see PROGRESS.md Decision D-13)
 
 ## 2.C RBAC & Audit (Backend)
 

@@ -3,8 +3,8 @@
 > **Living document.** Every section is updated as the corresponding part of the system is built.
 > Sections marked _"To be filled as we build"_ contain the final structure and are populated with real content (real commands, real endpoints, real schema) the moment the related task in `PROGRESS.md` is completed. No placeholders are left behind.
 
-**Version:** 0.3.0 (Phase 1 backend + frontend foundation core complete)
-**Last updated:** 2026-08-01
+**Version:** 0.5.0 (Phase 1 complete; Phase 2.A Multi-Tenancy Core and 2.B Authentication complete)
+**Last updated:** 2026-08-14
 **Maintainer:** Product Owner
 
 ---
@@ -861,38 +861,38 @@ Each app follows the same internal layout:
 
 ```
 apps/<app>/src/
-├── lib/apiClient.ts   createApiClient(...) instantiated with the app's own VITE_API_URL
-├── pages/             route-level components
-├── routes/index.tsx   <AppRoutes /> — the app's <Routes> tree (react-router-dom v7,
-│                       declarative mode — BrowserRouter/Routes/Route, API-
-│                       compatible with v6 usage)
-├── App.tsx            wires I18nextProvider → QueryClientProvider → BrowserRouter
-│                       → AppRoutes + <Toaster />
-├── main.tsx
-├── index.css           @tailwind directives; each app's tailwind.config.ts
-│                        extends @fitmirror/ui/tailwind-preset
-└── vite-env.d.ts        ImportMetaEnv typing for this app's VITE_* variables
+├── components/         app-specific components (ErrorFallback.tsx — Sentry.ErrorBoundary
+│                       fallback UI — lands here from the very first commit)
+├── lib/apiClient.ts    createApiClient(...) instantiated with the app's own VITE_API_URL
+├── lib/sentry.ts        initSentry() — no-ops unless VITE_SENTRY_DSN is set
+├── pages/               route-level components
+├── routes/index.tsx     <AppRoutes /> — the app's <Routes> tree (react-router-dom v7,
+│                        declarative mode — BrowserRouter/Routes/Route, API-
+│                        compatible with v6 usage)
+├── stores/               zustand stores (mission-control only, so far — see below)
+├── test/setup.ts         Vitest setup — imports @testing-library/jest-dom/vitest
+├── App.tsx               wires I18nextProvider → QueryClientProvider → BrowserRouter
+│                         → AppRoutes + <Toaster />
+├── main.tsx              initSentry() → createRoot → <Sentry.ErrorBoundary><App /></...>
+├── index.css             @tailwind directives; each app's tailwind.config.ts
+│                         extends @fitmirror/ui/tailwind-preset
+├── vite-env.d.ts         ImportMetaEnv typing for this app's VITE_* variables
+└── vitest.config.ts      jsdom environment; optimizeDeps.exclude + server.deps.inline
+                          for every @fitmirror/* workspace package — see PROGRESS.md D-11
 ```
 
-Deferred to a later Phase 1.B batch: `FileUploader`/`EmptyState`/`Skeleton`/`ErrorState`
-in `packages/ui`, the Recharts wrapper, the four `*Shell` layouts (`AppShell`/
-`KioskShell`/`PortalShell`/`MissionShell`), per-app Sentry + `ErrorBoundary`, and the
-Vitest/Playwright harnesses. The legacy internal layout below (`components/`,
-`features/`, `hooks/`, `layouts/`, `stores/`) is created per app as each of those
-lands — not scaffolded speculatively ahead of the code that needs it.
-
-```
-apps/<app>/src/ (grows to, as pages are built)
-├── components/    app-specific components
-├── features/      feature folders (products, campaigns, loyalty, ...)
-├── hooks/
-├── layouts/
-├── lib/
-├── pages/         route components
-├── routes/        router configuration
-├── stores/        zustand stores
-└── main.tsx
-```
+`packages/ui` now also exports `FileUploader`, `EmptyState`, `Skeleton`/`SkeletonCard`/
+`SkeletonTableRows`, `ErrorState`, the Recharts wrapper (`TrendLineChart`/
+`TrendAreaChart`/`ComparisonBarChart`, `src/components/Chart.tsx`), and
+`src/layouts/` (`AppShell`, `KioskShell`, `PortalShell`, `MissionShell`) — every app
+wires Sentry + `Sentry.ErrorBoundary` in `main.tsx`, and every app has a working
+Vitest suite (`npm run test --workspaces`) plus a shared root `playwright.config.ts`
+covering all four apps (`npm run e2e`). Mission Control is the only app with a
+`stores/` directory so far (`missionAuthStore.ts`, Phase 1.C) — the other three gain
+one once Phase 2.D's tenant-side auth lands. `features/`, `hooks/`, and `layouts/`
+(app-local, not to be confused with `packages/ui/src/layouts`) are created per app as
+each of those actually lands — not scaffolded speculatively ahead of the code that
+needs them.
 
 ## 4.4 Backend Naming & Layering Conventions
 
@@ -927,6 +927,22 @@ FitMirror does not use the Repository pattern. Rationale and full decision text:
 ### 4.4.3 PHP/Laravel Style
 
 Enforced automatically by Pint (`backend/pint.json`, Laravel preset) and Larastan (`backend/phpstan.neon`, level 6) in CI — see §3.12 and §9 for the exact commands. Notable project-specific rules on top of the Laravel preset: single quotes for strings without interpolation, alphabetically sorted imports, trailing commas in multiline arrays/arguments.
+
+### 4.4.4 Multi-Tenancy Strategy (Phase 2.A)
+
+**Single database, `tenant_id` discriminator, row-level isolation.** FitMirror does not use one database (or schema) per tenant. Every tenant-owned table carries a `tenant_id` foreign key, and isolation is enforced in the application layer, not by infrastructure. This was the assumed strategy since Phase 1 (D-02's rationale for native JSON columns already refers to `tenants.settings`) — Phase 2.A is where it actually gets built and, critically, gets tested for leakage.
+
+**Why not database-per-tenant:** at FitMirror's target scale (§2.4 — up to a few hundred tenants at launch), per-tenant databases multiply migration/backup/connection-pool operational cost for isolation guarantees that row-level scoping provides just as reliably when enforced consistently. A shared database also makes cross-tenant platform features (Mission Control's aggregate revenue dashboard, Phase 10 analytics) simple queries instead of fan-out across N connections.
+
+**How isolation is actually enforced** — three layers, all in `app/`:
+
+1. **`App\Models\Concerns\BelongsToTenant`** — a trait every tenant-owned model uses. It attaches `App\Scopes\TenantScope` as a global scope and auto-fills `tenant_id` on create from the active `TenantContext`. Application code never sets `tenant_id` by hand and can never assign the wrong one.
+2. **`App\Scopes\TenantScope`** — **fails closed**. With no active tenant context, a scoped model's query returns zero rows, not every tenant's rows. This is a deliberate reversal of the more common "no context = unscoped" default: forgetting to establish tenant context should surface as an empty result set to debug, never a silent full-table leak. The one way to intentionally read across tenants is explicit: `Model::withoutTenantScope()` for one query, or `TenantContext::runAs($tenant, $callback)` per tenant for a scheduled job/console command that needs to iterate every tenant.
+3. **`App\Support\TenantContext`** — a container singleton holding "which tenant is this request/job acting as". `App\Http\Middleware\ResolveTenant` sets it once per request (subdomain → custom domain → `X-Tenant` header → authenticated user's `tenant_id`, in that priority order — see §7.1). `App\Jobs\TenantAwareJob` sets and unconditionally `forget()`s it around every queued job's `handle()`, since `php artisan queue:work` reuses one process (and one container) across many jobs — a job that didn't clean up after itself would leak its tenant into whatever runs next in that worker.
+
+**Proven, not just asserted:** `tests/Feature/Tenancy/TenantScopeIsolationTest.php` exercises this against a throwaway fixture model (`tests/Fixtures/Widget.php` — no real tenant-owned business table exists yet; the first one lands with Phase 2.B's `users` table) and asserts, concretely: tenant A can never see tenant B's rows, `find()` can't reach across the boundary, and no context means no rows. `tests/Feature/Tenancy/ResolveTenantMiddlewareTest.php` covers the middleware's resolution order and the suspended/expired/pending rejection paths end-to-end over real HTTP requests.
+
+**What's still ahead:** tenant provisioning (create tenant + owner user + default roles + default store + default settings in one transaction) and teardown/soft-delete depend on pieces that don't exist yet — `users.tenant_id` (Phase 2.B), roles (Phase 2.C, `spatie/laravel-permission`), and `stores` (Phase 4.A). Building a "provisioning service" now would mean faking those dependencies; PROGRESS.md leaves both tasks unchecked rather than shipping a partial version, and they land alongside Phase 2.B's registration endpoint instead, which is the first real caller.
 
 ---
 
@@ -1038,8 +1054,9 @@ _Every variable is added to this table as it is introduced. Values shown are exa
 | `TELESCOPE_ENABLED` | Enable Telescope — only honoured in local/staging; `AppServiceProvider` never registers it in production regardless of this value | `true` | Yes |
 | `BG_REMOVAL_ENDPOINT` | Background removal service URL | `http://127.0.0.1:5000/remove` | Yes |
 | `BG_REMOVAL_KEY` | Background removal API key | `...` | No |
+| `SUPER_ADMIN_NAME` | Seeded super admin display name | `Product Owner` | Yes |
 | `SUPER_ADMIN_EMAIL` | Seeded super admin email | `owner@fitmirror.com` | Yes |
-| `SUPER_ADMIN_PASSWORD` | Seeded super admin password (change after first login) | `...` | Yes |
+| `SUPER_ADMIN_PASSWORD` | Seeded super admin password. If left blank on the *first* seed run, `SuperAdminSeeder` generates one and prints it once — see §8.12. Re-running the seeder never overwrites an existing hash unless this is set. | `...` | Yes |
 
 ## 5.6 Frontend
 
@@ -1097,7 +1114,84 @@ _Exported to `docs/erd.png` and embedded here once the schema stabilises at the 
 
 ## 6.3 Table Documentation
 
-_Empty — populated per migration._
+### `tenants`
+Purpose: one row per shop owner account — the root of every tenant-scoped query. See §4.4.4 for the isolation strategy.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key — this is the `tenant_id` every other tenant-owned table references |
+| `name` | string | No | — | Shop/business name |
+| `slug` | string | No | — | Unique, URL-safe identifier — also the subdomain and the `X-Tenant` header value in dev |
+| `subdomain` | string | No | — | Currently always equal to `slug`; kept as its own column since a future custom-subdomain feature could let it diverge |
+| `custom_domain` | string | Yes | null | Max-plan custom domain (Phase 4.A), checked before subdomain in `ResolveTenant` |
+| `owner_id` | bigint unsigned | Yes | null | FK → `users.id`, `nullOnDelete`. Nullable because provisioning creates the tenant before the owner user exists — backfilled once the owner is created |
+| `status` | string | No | `pending` | Backed by `App\Enums\TenantStatus` — `pending`, `trial`, `active`, `suspended`, `expired`, `rejected` |
+| `trial_ends_at` | timestamp | Yes | null | Set when a trial starts (Phase 3.B) |
+| `plan_id` | bigint unsigned | Yes | null | **No FK constraint yet** — `plans` table doesn't exist until Phase 3.A. Real, usable column; the constraint is added by a Phase 3.A migration once the referenced table exists |
+| `settings` | json | Yes | null | Tenant-level preferences (kiosk idle timeout, branding, etc.), read via `Tenant::setting('key.path', $default)` |
+| `created_at` / `updated_at` | timestamp | Yes | null | Standard timestamps |
+| `deleted_at` | timestamp | Yes | null | Soft delete — see §4.4.4 "teardown" note |
+
+Indexes: unique on `slug`, `subdomain`, `custom_domain`.
+Relationships: `belongsTo(User::class, 'owner_id')` as `owner()`. Every other tenant-owned model relates back via the `BelongsToTenant` trait's `tenant()` relation, not the other way around — `Tenant` itself has no `hasMany` declared per business table, since Phase 2.A ships before any of those tables exist.
+
+### `super_admins`
+Purpose: Mission Control (Product Owner / platform-operator) accounts. Deliberately not a row in `users` — see §8.12 and PROGRESS.md Phase 1.C.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `name` | string | No | — | Display name |
+| `email` | string | No | — | Unique login identifier |
+| `password` | string | No | — | Bcrypt hash |
+| `two_factor_secret` | text | Yes | null | TOTP secret, encrypted at rest via the model's `encrypted` cast |
+| `two_factor_recovery_codes` | text | Yes | null | JSON array of recovery codes, encrypted at rest via `encrypted:array` |
+| `two_factor_confirmed_at` | timestamp | Yes | null | Set once the TOTP setup flow is confirmed (2FA setup flow itself ships in a later phase) |
+| `role` | string | No | `super_admin` | Backed by `App\Enums\SuperAdminRole` — `super_admin`, `support`, `finance` |
+| `status` | string | No | `active` | Backed by `App\Enums\SuperAdminStatus` — `active`, `suspended` |
+| `last_login_at` | timestamp | Yes | null | Updated on every successful `POST /api/v1/mission/login` |
+| `remember_token` | string | Yes | null | Laravel standard |
+| `created_at` / `updated_at` | timestamp | Yes | null | Standard timestamps |
+
+Indexes: unique on `email`.
+Relationships: `morphMany` to `personal_access_tokens` via Sanctum's `HasApiTokens` (same table tenant users' tokens live in — `tokenable_type` discriminates the two).
+
+### `users`
+Purpose: tenant-side accounts — shop owners and (from Phase 2.C) staff. The default Laravel scaffold table, extended by a Phase 2.B migration rather than rewritten. Uses `BelongsToTenant` — see §4.4.4.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | Yes | null | FK → `tenants.id`, `cascadeOnDelete`. Nullable only because a factory/edge case can construct a user before its tenant exists; every real registered user has one |
+| `store_id` | bigint unsigned | Yes | null | **No FK constraint yet** — `stores` doesn't exist until Phase 4.A. Same pattern as `tenants.plan_id` |
+| `name` | string | No | — | Display name |
+| `email` | string | No | — | **Globally unique**, not per-tenant — login resolves a user by email alone before any tenant is known, which a per-tenant-unique email would make ambiguous. See PROGRESS.md Phase 2.B migration comment |
+| `email_verified_at` | timestamp | Yes | null | Set by `GET /api/v1/auth/email/verify/{id}/{hash}` |
+| `phone` | string | Yes | null | |
+| `password` | string | No | — | Bcrypt hash |
+| `avatar` | string | Yes | null | Path on the `public` disk; `PATCH /api/v1/auth/profile` deletes the old file when replaced |
+| `locale` | string(5) | No | `bn` | `bn` or `en` |
+| `status` | string | No | `active` | Backed by `App\Enums\UserStatus` — `invited`, `active`, `suspended` |
+| `last_login_at` | timestamp | Yes | null | Updated on every successful login (both the password step and, if 2FA is enabled, the completed challenge) |
+| `two_factor_secret` / `two_factor_recovery_codes` / `two_factor_confirmed_at` | text / text / timestamp | Yes | null | Same shape as `super_admins`, encrypted at rest the same way |
+| `remember_token`, `created_at` / `updated_at`, `deleted_at` | — | Yes | null | Laravel standard + soft delete |
+
+Indexes: unique on `email`.
+Relationships: `belongsTo(Tenant::class)` as `tenant()` (via `BelongsToTenant`). `Tenant::owner()` points back at the specific `User` who owns the tenant — see `User::isTenantOwner()`.
+
+### `login_attempts`
+Purpose: append-only audit trail backing progressive account lockout (`App\Services\Auth\LoginService`). Keyed on the submitted email, not a `user_id` FK, so a guess against a nonexistent email is still recorded and a deleted user's history isn't lost.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `email` | string | No | — | The email submitted, whether or not it matched a real account |
+| `ip_address` | string(45) | No | — | IPv4 or IPv6 |
+| `user_agent` | text | Yes | null | |
+| `successful` | boolean | No | — | |
+| `created_at` | timestamp | Yes | null | No `updated_at` — rows are never modified |
+
+Indexes: composite on `(email, created_at)`, matching `LoginAttempt::consecutiveFailures()`'s query shape.
 
 ---
 
@@ -1211,10 +1305,77 @@ Response `200` (healthy):
 Response `503` (degraded) — same shape, `"status": "degraded"`, and at least one check is `false`.
 
 ## 7.3 Authentication Endpoints
-_Empty — populated in Phase 2._
+
+All mounted under `/api/v1/auth`. Tenant-facing only — never confuse with Mission Control's separate `/api/v1/mission/login` etc. (§7.15), which authenticates a totally different model against a totally different guard.
+
+### `POST /auth/register`
+Shop-owner registration. Creates a `pending` tenant and its owner user in one transaction (`App\Services\Auth\RegistrationService`), fires `TenantRegistered`, and emails a verification link. Does **not** log the new owner in — no token is issued.
+
+**Auth:** none. **Throttle:** `auth` (5/min per IP+email).
+
+Request: `{ "tenant_name": "...", "name": "...", "email": "...", "phone": "...", "password": "...", "password_confirmation": "..." }`
+Response `201`: `{ "data": { "tenant": { "id", "name", "slug", "status": "pending" }, "user": { "id", "name", "email" } } }`
+
+### `POST /auth/login`
+Two possible `data.status` values the client branches on:
+- `"authenticated"` — `data.token` is a real Sanctum token, issued with the `['*']` ability (fine-grained abilities are a Phase 2.C RBAC concern, not yet enforced).
+- `"two_factor_required"` — `data.two_factor_token` must be submitted to `/auth/2fa/challenge` before any real token is issued.
+
+Rejects with `422` and a generic "credentials do not match" message for both an unknown email and a wrong password (no user enumeration), and separately once **5 consecutive failures** since the account's last success have accumulated (`App\Models\LoginAttempt::consecutiveFailures()`) — a **progressive** lockout independent of the per-minute `throttle:auth` limiter: `5 × (failures − 4)` minutes.
+
+**Auth:** none. **Throttle:** `auth`.
+
+Request: `{ "email": "...", "password": "..." }`
+
+### `POST /auth/2fa/challenge`
+Step two of login for a 2FA-enabled account. Accepts either a live TOTP `code` or a one-time `recovery_code`. The `two_factor_token` from the login response expires after 5 minutes (server-side cache entry).
+
+**Auth:** none (the `two_factor_token` itself is the credential). **Throttle:** `auth`.
+
+Request: `{ "two_factor_token": "...", "code": "123456" }` or `{ "two_factor_token": "...", "recovery_code": "abcd-1234" }`
+
+### `GET /auth/email/verify/{id}/{hash}`
+Named route `verification.verify` — hardcoded by `Illuminate\Auth\Notifications\VerifyEmail`; renaming breaks every already-sent email. Signed, 60-minute expiry.
+
+**Auth:** none (the signature is the credential). **Throttle:** `auth`.
+
+### `POST /auth/forgot-password` / `POST /auth/reset-password`
+Standard Laravel password-reset broker (`password_reset_tokens` table). `forgot-password` always returns the same generic message regardless of whether the email exists. `reset-password` revokes **every** existing Sanctum token on success — a password reset means the old session is no longer trusted.
+
+**Auth:** none. **Throttle:** `auth`.
+
+### `POST /auth/logout`
+Revokes only the token used on this request (`currentAccessToken()->delete()`) — logging out one device never logs out another.
+
+**Auth:** `sanctum`.
+
+### `GET /auth/me`
+Returns the authenticated user, their tenant, and (honestly) `null`/`[]` for `plan`/`limits`/`permissions` — `plans` (Phase 3.A) and real roles (Phase 2.C) don't exist yet.
+
+**Auth:** `sanctum`.
+
+### `POST /auth/change-password`
+Requires `current_password`. Revokes every **other** token but keeps the one used for this request alive, so the client isn't logged out by its own successful call.
+
+**Auth:** `sanctum`.
+
+### `PATCH /auth/profile`
+Updates `name`/`phone`/`avatar`/`locale`. Notification preferences are excluded — `notification_preferences` doesn't exist until Phase 9.A. Avatar upload replaces (and deletes) any previous file on the `public` disk.
+
+**Auth:** `sanctum`.
+
+### `GET /auth/sessions` / `DELETE /auth/sessions/{tokenId}`
+"Sessions" means Sanctum personal access tokens — this is an API-only app with no server-side session store. `is_current` flags whichever token made the request. Revoking a token that doesn't belong to the caller returns `404`, not `403` (never confirms another account's token even exists).
+
+**Auth:** `sanctum`.
+
+### `POST /auth/2fa/enable` / `/confirm` / `/disable` / `/recovery-codes`
+`enable` generates and stores an unconfirmed secret, returning `{ secret, otpauth_url, qr_code_svg }`. `confirm` validates a real code, marks 2FA active, and returns 8 recovery codes **in plaintext exactly once** — only their hashes are persisted, the same as passwords. `recovery-codes` regenerates and returns a fresh set (invalidating the old ones).
+
+**Auth:** `sanctum`.
 
 ## 7.4 Tenant & Profile Endpoints
-_Empty — populated in Phase 2._
+_Reserved for tenant-settings endpoints (branding, business hours, etc.) — not yet built. User profile self-service lives under `/auth/profile` (§7.3) since it's part of the auth surface, not tenant administration._
 
 ## 7.5 Subscription & Billing Endpoints
 _Empty — populated in Phase 3._
@@ -1247,7 +1408,78 @@ _Empty — populated in Phase 11._
 _Empty — populated in Phase 12._
 
 ## 7.15 Mission Control Endpoints
-_Empty — populated in Phase 13._
+Foundation (auth + health) shipped in Phase 1.C; tenant approval/plan/revenue endpoints ship in Phase 13. Every route below is mounted at `/api/v1/mission` (see `routes/api_mission.php`) and authenticates against the `super_admin` guard — a tenant `sanctum` token is always rejected, and vice versa.
+
+### `GET /api/v1/mission/health`
+Unauthenticated liveness probe for the Mission Control surface. Checks the database connection and — unlike the tenant health endpoint — whether at least one `super_admins` row exists, so a fresh deploy that forgot to run `SuperAdminSeeder` is visible immediately as `degraded` rather than surfacing later as "nobody can log in."
+
+**Auth:** none. **Plan:** none.
+
+Response `200` (healthy):
+```json
+{
+  "success": true,
+  "message": "Mission Control API is healthy.",
+  "data": {
+    "status": "ok",
+    "checks": { "app": true, "database": true, "super_admin_seeded": true },
+    "timestamp": "2026-08-14T08:07:16+00:00"
+  }
+}
+```
+
+### `POST /api/v1/mission/login`
+Issues a Sanctum token for a `super_admins` row. Rejects an unknown email/wrong password with the same `invalid_credentials` error code (no user enumeration), and rejects a correct password on a suspended account with `super_admin_suspended`. Updates `last_login_at` on success. Throttled via the shared `auth` rate limiter (5/min per IP+email).
+
+**Auth:** none. **Plan:** none.
+
+Request body:
+```json
+{ "email": "owner@fitmirror.com", "password": "••••••••" }
+```
+Response `200`:
+```json
+{
+  "success": true,
+  "message": "Success.",
+  "data": {
+    "token": "1|abcdef...",
+    "super_admin": { "id": 1, "name": "Product Owner", "email": "owner@fitmirror.com", "role": "super_admin", "status": "active" }
+  }
+}
+```
+Response `401` (`invalid_credentials`) / `403` (`super_admin_suspended`) / `422` (missing `email`/`password`).
+
+### `POST /api/v1/mission/logout`
+Revokes the bearer token used on the request (`currentAccessToken()->delete()`), not every token the account holds — logging out one browser tab never logs out another device.
+
+**Auth:** `super_admin` (active account only). **Plan:** none.
+
+Response `204`: empty body.
+
+### `GET /api/v1/mission/me`
+The Mission Control analog of the tenant API's `GET /api/v1/user`. Returns the authenticated super admin's profile, resolved role permissions, and 2FA status.
+
+**Auth:** `super_admin` (active account only). **Plan:** none.
+
+Response `200`:
+```json
+{
+  "success": true,
+  "message": "Success.",
+  "data": {
+    "id": 1,
+    "name": "Product Owner",
+    "email": "owner@fitmirror.com",
+    "role": "super_admin",
+    "role_label": "Super Admin",
+    "status": "active",
+    "permissions": ["tenants", "plans", "billing", "ops", "support"],
+    "two_factor_enabled": false,
+    "last_login_at": "2026-08-14T08:20:00+00:00"
+  }
+}
+```
 
 ## 7.16 Public REST API (Max Plan)
 _Empty — populated in Phase 12._
@@ -1360,7 +1592,14 @@ _To be filled in Phase 12._
 
 **Feature scope:** AES-256 at rest and TLS 1.3 in transit, camera frame auto-delete, mandatory 2FA for admins, granular role permission matrix, brute force lockout, per-tenant rate limiting, SQL injection and XSS protection, quarterly vulnerability scans, GDPR-inspired right to erasure, daily automated backups with 30-day retention.
 
-_To be filled in Phase 14._
+**Authentication pieces shipped in Phase 2.B** (the rest of this section's scope — vulnerability scans, backups, GDPR erasure — is still Phase 14):
+
+- **Password policy** (`App\Providers\AppServiceProvider::configurePasswordPolicy()`): every `Password::defaults()` rule in the app — registration, reset, change — enforces min 10 chars, mixed case, a number, a symbol, and a Have I Been Pwned breach check (`uncompromised()`, k-anonymity API, no plaintext password ever leaves the server).
+- **TOTP 2FA** (`App\Services\Auth\TwoFactorService`, `pragmarx/google2fa`): secret and recovery codes stored via Laravel's `encrypted`/`encrypted:array` casts, never in plaintext. Recovery codes are additionally one-way hashed and single-use (consumed on match). Mandatory for tenant owners (`App\Http\Middleware\EnsureTwoFactorIsEnabled`, alias `tenant.2fa`) once a business route needs it — not yet mandatory for super admins, since Mission Control has no self-service 2FA setup UI of its own yet (see PROGRESS.md Phase 2.B).
+- **Progressive account lockout** (`App\Models\LoginAttempt`, `App\Services\Auth\LoginService`): independent of and in addition to the per-minute `throttle:auth` rate limiter — 5 consecutive failed attempts since the account's last success locks it out for `5 × (failures − 4)` minutes, so a sustained brute-force attempt faces an ever-longer wait rather than a fixed one.
+- **Tenant isolation** (`TenantScope` fails closed): see §4.4.4 and PROGRESS.md Decision D-13 — the single most consequential security property of the whole backend, since every tenant-owned table depends on it.
+
+_The rest of this section (encryption at rest for file storage, TLS, camera frame deletion, vulnerability scans, backups, GDPR erasure) is still to be filled in as those phases land — Phase 5 (media), Phase 6 (camera privacy), Phase 14 (the rest)._
 
 ## 8.12 Mission Control
 
@@ -1368,7 +1607,15 @@ _To be filled in Phase 14._
 
 **Feature scope:** tenant management with approval/rejection and impersonation, plan and pricing control with feature flags, revenue dashboard (MRR, ARR, churn, ARPU), platform operations (maintenance mode, announcements, email blasts, system health, backups), support tickets and in-platform messaging, full audit log.
 
-_To be filled in Phase 13._
+**Foundation shipped in Phase 1.C** — auth is the only thing that exists so far; tenant approval and everything else above is still Phase 13.
+
+- **Data model:** `super_admins` (§6.3) — completely separate from `users`. No `tenant_id`, since a super admin belongs to the platform, not a tenant.
+- **Auth guard:** `super_admin`, driven by Sanctum against the `super_admins` Eloquent provider (`config/auth.php`). A tenant's `sanctum`-guard token is structurally incapable of authenticating here — Sanctum resolves the token to its `tokenable`, and the guard only accepts a `tokenable` of type `App\Models\SuperAdmin`.
+- **Middleware:** every authenticated route runs `['auth:super_admin', 'super_admin']`. The first checks the token; the second (`App\Http\Middleware\EnsureSuperAdmin`) additionally rejects a structurally-valid token belonging to a `status = suspended` account — a check Sanctum's guard has no concept of on its own.
+- **Roles & permissions:** `App\Enums\SuperAdminRole` (`super_admin`, `support`, `finance`) each map to a fixed `App\Enums\SuperAdminPermission` set (`tenants`, `plans`, `billing`, `ops`, `support`) via `SuperAdminRole::permissions()`. Per-route permission enforcement (`->middleware('super_admin.permission:billing')`) lands with the Phase 13 controllers that actually need it — the enum and mapping exist now so those routes have something real to gate against.
+- **Bootstrap account:** `database/seeders/SuperAdminSeeder.php`, reading `SUPER_ADMIN_NAME`/`SUPER_ADMIN_EMAIL`/`SUPER_ADMIN_PASSWORD` from `.env`. Idempotent (`firstOrNew` keyed on email) — re-running `php artisan db:seed` never overwrites a password the Product Owner has since changed through the app.
+- **API surface:** see §7.15 (`/health`, `/login`, `/logout`, `/me`).
+- **Frontend:** `apps/mission-control` — `MissionLogin` (real form: client-side email/required-field validation, loading state, server error surfaced inline), `useMissionAuthStore` (Zustand, persists the profile; the bearer token itself lives in `@fitmirror/api`'s shared `tokenStorage`), and `routes/ProtectedLayout.tsx` (redirects an unauthenticated visit to `/login`, remembering the attempted path; wraps everything else in `MissionShell`). Verified end-to-end with a live `php artisan serve` + `vite dev` run, not just unit tests — see PROGRESS.md Phase 1.C.
 
 ---
 
@@ -1740,6 +1987,53 @@ _Version history, updated at every release. Follows [Semantic Versioning](https:
 - **Laravel Sanctum was never actually installed** despite being reported as done in the prior session summary — `routes/api.php` already referenced `auth:sanctum` middleware, which would have failed at runtime. See Decision D-08.
 - Our customised `App\Providers\HorizonServiceProvider` (with the dashboard gate) was never registered in `bootstrap/providers.php` — only the base package provider was, via auto-discovery, so the gate had zero effect.
 - Unauthenticated API requests without an explicit `Accept: application/json` header (e.g. a bare `curl` call) 500'd with `RouteNotFoundException` trying to redirect to a non-existent `login` route, instead of returning a 401 JSON error. Fixed via `$middleware->redirectGuestsTo(fn () => null)` in `bootstrap/app.php` — this is an API-only application with no web login route to redirect to.
+
+---
+
+## Phase 2.A — Multi-Tenancy Core / Phase 2.B — Authentication — 2026-08-14
+
+### Added
+- `tenants` table/model/factory, `App\Enums\TenantStatus`, `App\Models\Concerns\BelongsToTenant`, `App\Scopes\TenantScope`, `App\Support\TenantContext`, `App\Http\Middleware\ResolveTenant`/`EnsureTenantIsActive`, `App\Support\TenantCacheKey`/`TenantStorage`, `App\Jobs\TenantAwareJob` — see §4.4.4 for the full isolation strategy
+- Tenancy strategy write-up: DOCUMENTATION.md §4.4.4
+- `users` table extended with `tenant_id`/`store_id`/`phone`/`avatar`/`locale`/`status`/`last_login_at`/2FA columns (migration, not a rewrite of the scaffold table); `App\Enums\UserStatus`
+- Full tenant auth surface under `/api/v1/auth`: register, login (+ progressive lockout + 2FA challenge), logout, me, email verification (signed link + resend), forgot/reset/change password, profile update (incl. avatar upload), active session list/revoke, TOTP 2FA (enable/confirm/disable/recovery codes) — see §7.3 for the full endpoint reference
+- `App\Services\Auth\{RegistrationService,LoginService,TwoFactorService}`, `App\Models\LoginAttempt` (+ `login_attempts` table), `App\Events\TenantRegistered`
+- Shared password policy (`Password::defaults()`): min 10 chars, mixed case, number, symbol, Have I Been Pwned breach check — every password rule in the app inherits it from one place (`AppServiceProvider::configurePasswordPolicy()`)
+- `App\Http\Middleware\EnsureTwoFactorIsEnabled` (alias `tenant.2fa`) — mandatory 2FA for tenant owners
+- 65 backend feature tests total (was 8 at the end of Phase 1.C) — `tests/Feature/Auth/*` (46 tests), `tests/Feature/Tenancy/*` (12 tests, using a throwaway fixture model since no real tenant-owned business table exists until this phase)
+- Decision D-13 recorded: `TenantScope` fails closed, and the three deliberate, audited bypasses that make authentication itself possible (`App\Models\PersonalAccessToken`, `App\Auth\TenantUnawareUserProvider`, `LoginService`'s own lookup) — see below
+
+### Fixed
+- **`TenantScope`'s fail-closed default silently broke every tenant login and every already-authenticated `auth:sanctum` request.** Caught by the Phase 2.B login/2FA feature tests, not by inspection: (1) `LoginService`'s own `User::where('email', ...)` lookup returned nothing, because no tenant context can exist yet at the exact moment login is what determines it; (2) Sanctum resolves a token's owner via a `MorphTo` relation that inherits the model's global scopes, so `$accessToken->tokenable` silently resolved to `null` for every tenant `User`, even with a perfectly valid token. Laravel's password-reset broker had the identical problem. Fixed with three narrow, deliberate bypasses — a custom Sanctum token model (`App\Models\PersonalAccessToken`), a custom `users` auth provider (`App\Auth\TenantUnawareUserProvider`), and `LoginService::attempt()`'s explicit `withoutTenantScope()` — see Decision D-13 for the full reasoning and why these three are the complete, intentional list.
+- `Password::uncompromised()`'s Have I Been Pwned HTTP call wasn't reliably intercepted by a narrow `Http::fake(['api.pwnedpasswords.com/*' => ...])` pattern inside the full HTTP test-request cycle (worked fine called directly/via tinker) — broadened to `Http::fake(['*' => ...])` in the affected tests, which also guarantees zero real network calls leak out of the test suite.
+- A Laravel testing artifact (not a production bug, first hit in Phase 1.C's `MissionLoginTest` — see that entry below): two sequential authenticated HTTP calls within one PHPUnit test method share a cached `AuthManager` guard instance. `LoginTest::test_logout_revokes_only_the_current_token` and equivalents needed no special handling here since each test issues a fresh token per call rather than reusing one across an assumed-stale state, unlike the Mission Control case.
+
+### Known limitations, recorded rather than hidden
+- Tenant provisioning (create tenant + owner + default roles + default store in one service) and teardown are still unbuilt — they depend on Phase 2.C roles and Phase 4.A stores. `RegistrationService` covers only what's real today: tenant + owner.
+- Customer OTP authentication (Phase 2.B's last checklist item) is unbuilt — needs the `customers` table, which doesn't exist until Phase 9.A.
+- Mandatory 2FA is enforced for tenant owners but not yet for super admins — Mission Control has no self-service 2FA setup flow of its own yet, so enforcing it now would be a lockout trap, not a security feature.
+
+---
+
+## Phase 1.B — Frontend Foundation (complete) / Phase 1.C — Mission Control Foundation — 2026-08-14
+
+### Added
+- `packages/ui`: `FileUploader` (drag-drop + client-side accept/size validation + per-item progress), `EmptyState`, `Skeleton`/`SkeletonCard`/`SkeletonTableRows`, `ErrorState`
+- `packages/ui`: Recharts wrapper (`src/components/Chart.tsx`) — `TrendLineChart`, `TrendAreaChart`, `ComparisonBarChart`, all reading series colors from a new `chartPalette` token (`tokens/colors.ts`)
+- `packages/ui/src/layouts`: `AppShell` (collapsible sidebar, breadcrumbs, user menu), `KioskShell` (full-screen, `user-select: none`, right-click disabled), `PortalShell` (mobile-first, centered on wide viewports, optional bottom tab bar), `MissionShell` (dark sidebar, deliberately distinct from `AppShell` so a screenshot can never be mistaken for the tenant dashboard)
+- Sentry wired into all four apps: `src/lib/sentry.ts` (`initSentry()`, no-op without `VITE_SENTRY_DSN`) + `src/components/ErrorFallback.tsx` + `Sentry.ErrorBoundary` wrapping `<App />` in every `main.tsx`
+- Vitest + React Testing Library: one `vitest.config.ts` per app, one passing `NotFound.test.tsx` per app; `packages/ui`, `packages/api`, `packages/i18n` each given a `tsconfig.json` (Decision D-11 — without one, Vitest's SSR module runner transformed `.tsx` with esbuild's classic JSX mode and threw `ReferenceError: React is not defined`, even though the real `vite build` was unaffected)
+- Playwright E2E harness: root `playwright.config.ts` (4 projects, 4 `webServer` entries, one per app/port) + `e2e/*.spec.ts` — verified with real `npx playwright test` runs, not just written and assumed to work
+- Backend: `super_admins` table/model/factory, `App\Enums\SuperAdminRole`/`SuperAdminPermission`/`SuperAdminStatus`, `super_admin` Sanctum guard (`config/auth.php`), `EnsureSuperAdmin` middleware, `routes/api_mission.php` (`/health`, `/login`, `/logout`, `/me`), `SuperAdminSeeder` (idempotent, `.env`-driven) — see §8.12 and §7.15
+- Frontend: `apps/mission-control` real login page (`MissionLogin.tsx`), `useMissionAuthStore`, `routes/ProtectedLayout.tsx` (redirect-to-login guard) — verified against the live backend with a real `php artisan serve` + `vite` run, not only against mocks
+- Decision D-11 (per-package `tsconfig.json` for correct Vitest JSX transform) and D-12 (`phpstan.neon` needs `parseModelCastsMethod: true` for Laravel 12's method-based `casts()`) recorded in PROGRESS.md
+
+### Fixed
+- Larastan silently typed every Eloquent cast attribute across the entire backend as plain `string` — including `datetime` casts — because `parseModelCastsMethod` (off by default) never saw any model's `casts()` method. Invisible until `SuperAdmin`'s enum casts produced real `identical.alwaysFalse` / `method.nonObject` false positives. See Decision D-12.
+- A Laravel testing artifact, not a production bug: two sequential authenticated requests inside one PHPUnit test method shared a cached `AuthManager` guard instance, so a token deleted by the first request (logout) still appeared valid to the second (`/me`). Fixed test-side with `Auth::forgetGuards()` between calls — documented inline in `MissionLoginTest.php` so it isn't rediscovered from scratch next time.
+
+### Resolved from the previous entry's "Known issues"
+- The `FileUploader`/`EmptyState`/`Skeleton`/`ErrorState`/Recharts/`*Shell`/Sentry/Vitest/Playwright items deferred at the end of the 2026-08-01 Phase 1.B entry below are all now complete.
 
 ---
 

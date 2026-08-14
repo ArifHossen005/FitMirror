@@ -4,8 +4,12 @@ import { cn } from '../utils/cn';
 
 export interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   label?: string;
-  error?: string;
-  hint?: string;
+  // `| undefined` (not just `?`) so a field-error variable typed
+  // `string | undefined` — the natural shape of "no error yet" in form
+  // state — can be passed straight through under exactOptionalPropertyTypes
+  // without every call site needing a conditional spread.
+  error?: string | undefined;
+  hint?: string | undefined;
 }
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(

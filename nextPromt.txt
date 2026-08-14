@@ -4,56 +4,97 @@ FitMirror SaaS project — continuing an existing build.
 PROJECT: d:\New folder\my-up-yosuite\FitMirror
 
 STEP 1 — Read these first, don't skip:
-  - PROGRESS.md   (829-task checklist, Decision Log D-01–D-10 at top)
+  - PROGRESS.md   (829-task checklist, Decision Log D-01–D-13 at top)
   - DOCUMENTATION.md (living technical docs, 14 sections)
 
-Current state: 78/829 tasks done (9.4%). Phase 1.A (backend foundation) is
-100% complete and verified. Phase 1.B (frontend foundation) core is done:
-4 Vite+React 19+TS apps (dashboard/kiosk/portal/mission-control) scaffolded
-as an npm workspace, plus packages/ui (design tokens + 13 shared
-components), packages/api (Axios client, TanStack Query, Zustand stores),
-packages/i18n (bn/en). All four apps build clean, ESLint workspace-wide is
-clean. Read the Decision Log before touching anything — especially D-06
-(Laravel 12 not 11), D-09 (no Repository pattern), D-10 (React 19 /
-react-router-dom v7, and a tracked-but-inapplicable react-router CVE).
+Current state: 132/829 tasks done (15.9%). Phase 1 (Foundation) is 100%
+complete and verified — backend foundation, frontend foundation (all 4
+apps + packages/ui + packages/api + packages/i18n), and Mission Control
+foundation (super_admins, guard, login, health check) all done and tested.
+Phase 2.A (Multi-Tenancy Core) and Phase 2.B (Authentication) are also
+complete and verified: tenants table, BelongsToTenant/TenantScope/
+TenantContext, ResolveTenant/EnsureTenantIsActive middleware, full users
+auth surface (register/login/logout/me/2FA/password reset/sessions/
+profile). 65 backend feature tests pass, Larastan + Pint clean, frontend
+builds/lints/tests clean across all 4 apps plus a live Playwright run.
+
+Read the Decision Log before touching anything — especially D-09 (no
+Repository pattern), D-11 (every packages/* workspace needs its own
+tsconfig.json or Vitest's JSX transform breaks), D-12 (phpstan.neon needs
+parseModelCastsMethod: true for Laravel 12's method-based casts()), and
+D-13 (TenantScope fails closed — no tenant context means zero rows, not
+every tenant's rows; three deliberate, audited bypasses make
+authentication itself possible — read this one carefully before writing
+any new code that queries User or another BelongsToTenant model outside
+an authenticated request's already-resolved tenant context).
 
 STEP 2 — Verify before trusting: PROGRESS.md checkboxes were reconciled
-against the actual disk state as of 2026-08-01, but always spot-check with
-real commands (composer.lock, npm ls, grep) before assuming something
-marked [x] still holds — don't take a checkbox as proof by itself.
+against the actual disk state as of 2026-08-14, but always spot-check with
+real commands (composer.lock, npm ls, php artisan route:list, grep) before
+assuming something marked [x] still holds — don't take a checkbox as proof
+by itself.
 
 HOW I WANT YOU TO WORK (same as before):
-  - Batches of 20 tasks. Do NOT stop and ask "continue?" after each task —
-    move through the whole batch, then update PROGRESS.md (checkboxes +
-    summary numbers) and the relevant DOCUMENTATION.md sections with REAL
-    content (real commands, real code, real config) before ending the turn.
+  - Batches of 15-20 tasks. Do NOT stop and ask "continue?" after each
+    task — move through the whole batch, then update PROGRESS.md
+    (checkboxes + summary numbers) and the relevant DOCUMENTATION.md
+    sections with REAL content (real commands, real code, real config,
+    real endpoint docs) before ending the turn.
   - NEVER leave // TODO, stub functions, or placeholder logic. Every
     function fully implemented with validation and error handling.
-  - After writing code, actually run it — build, lint, test — don't just
-    write files and assume they work. This session caught multiple real
-    bugs (missing Sanctum install, unregistered service provider, a 500 on
-    unauthenticated requests, a TypeScript peer-dependency conflict) by
-    verifying, not by inspection alone.
+  - After writing code, actually run it — migrate, test, lint, build —
+    don't just write files and assume they work. Phase 2.B alone caught
+    two real, systemic bugs this way (see Decision D-13) that inspection
+    alone would have missed entirely.
+  - When a task genuinely depends on a table/model from a LATER phase
+    that doesn't exist yet (e.g. Phase 2.A's tenant provisioning service
+    needs Phase 2.C's roles and Phase 4.A's stores), don't fake it or
+    build a partial/broken version — leave it unchecked with a clear
+    one-line reason in PROGRESS.md and move on. This has already happened
+    twice (tenant provisioning/teardown in 2.A, customer OTP auth in 2.B)
+    and is the right call, not a shortcut.
   - If a package/library resolves to a newer major version than the spec
-    says (this happened with Laravel 11→12 and React 18→19), don't fight
-    it if the newer version is the only installable/current option —
-    record a Decision (D-11, D-12, ...) explaining why, then proceed.
+    says, don't fight it if the newer version is the only installable/
+    current option — record a Decision (D-14, D-15, ...) explaining why,
+    then proceed.
   - Tell me clearly if you hit a real blocker or must deviate from spec.
 
-STEP 3 — Next task: finish the rest of Phase 1.B, then move to Phase 1.C.
-Per PROGRESS.md, the remaining Phase 1.B items are:
-  - packages/ui: FileUploader (drag-drop + progress), EmptyState, Skeleton
-    loaders, ErrorState
-  - Shared Chart component wrapper (Recharts) for analytics
-  - AppShell (dashboard sidebar/topbar/breadcrumbs), KioskShell (full-screen,
-    no chrome), PortalShell (mobile-first), MissionShell layouts
-  - Global ErrorBoundary + Sentry browser SDK wired into each of the 4 apps
-  - Vitest + React Testing Library setup with a sample passing test per app
-  - Playwright E2E harness with a smoke test per app
+STEP 3 — Next task: Phase 2.C — RBAC & Audit (Backend). Per PROGRESS.md,
+the remaining Phase 2.C items are:
+  - Define the full permission matrix (module × action) as a config file
+  - Seed roles: Owner, Manager, Staff, and their default permissions
+    (spatie/laravel-permission — already installed since Phase 1.A)
+  - Seed Mission Control roles: Super Admin, Support Agent, Finance
+    (note: SuperAdminRole enum + permissions already exist from Phase
+    1.C — this task is about wiring spatie/laravel-permission itself in,
+    or deciding it's redundant with the existing enum and documenting
+    that decision)
+  - Build role assignment API for staff users
+  - Build custom-role creation API for Max-plan tenants
+  - Create Laravel Policies for Tenant, Store, User, Product, Campaign,
+    Loyalty, Customer, Report (most of these models don't exist yet —
+    only build policies for models that are real today: Tenant, User;
+    leave the rest unchecked with a reason, same pattern as before)
+  - Register policies and enforce authorize() in every controller action
+  - Build staff invite API — email invitation with signed acceptance link
+  - Build invite acceptance API creating the staff user with the
+    assigned role
+  - Build staff CRUD API (list, show, update role, deactivate, delete)
+  - Enforce plan staff-account limits on invite/create (plans don't exist
+    until Phase 3.A — this will hit the same "future dependency" pattern;
+    document and defer if so)
+  - Configure activity logging on all tenant-facing models
+    (spatie/laravel-activitylog — already installed since Phase 1.A)
+  - Build audit log API with filters (user, module, action, date range)
+  - Build super-admin impersonation token issuance with audit entry and
+    expiry
+  - Build impersonation exit endpoint restoring the original session
+  - Write RBAC tests asserting each role's allowed and denied actions
 
-Then Phase 1.C — Mission Control Foundation (super_admins table/model,
-super_admin auth guard, routes/api_mission.php, EnsureSuperAdmin middleware,
-super admin seeder, Mission Control login page shell).
+Then Phase 2.D — Frontend: Auth & Team (registration/login/2FA pages,
+protected-route wrapper, usePermissions hook, staff management page,
+activity audit log page, impersonation banner) — this is the natural
+partner to 2.C since it needs real roles/permissions to render against.
 
 Start now: read the files, verify current state, then continue with the
-next batch of 20. 
+next batch of 15-20 tasks.

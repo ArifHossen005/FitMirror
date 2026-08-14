@@ -4,7 +4,8 @@ import { cn } from '../utils/cn';
 
 export interface CheckboxProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'type'> {
   label?: string;
-  error?: string;
+  // See Input.tsx's InputProps for why this is `| undefined`, not just `?`.
+  error?: string | undefined;
 }
 
 export const Checkbox = forwardRef<HTMLInputElement, CheckboxProps>(

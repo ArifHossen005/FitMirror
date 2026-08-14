@@ -4,8 +4,9 @@ import { cn } from '../utils/cn';
 
 export interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   label?: string;
-  error?: string;
-  hint?: string;
+  // See Input.tsx's InputProps for why this is `| undefined`, not just `?`.
+  error?: string | undefined;
+  hint?: string | undefined;
 }
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(

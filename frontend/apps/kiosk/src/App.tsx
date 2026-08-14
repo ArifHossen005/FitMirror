@@ -1,6 +1,6 @@
 import { createQueryClient } from '@fitmirror/api';
 import { createI18n } from '@fitmirror/i18n';
-import { Toaster } from '@fitmirror/ui';
+import { KioskShell, Toaster } from '@fitmirror/ui';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { useState } from 'react';
 import { I18nextProvider } from 'react-i18next';
@@ -16,7 +16,9 @@ export default function App() {
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
-          <AppRoutes />
+          <KioskShell>
+            <AppRoutes />
+          </KioskShell>
           <Toaster />
         </BrowserRouter>
       </QueryClientProvider>
