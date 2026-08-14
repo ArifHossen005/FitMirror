@@ -93,6 +93,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Multi-Tenancy
+    |--------------------------------------------------------------------------
+    |
+    | The root domain tenant subdomains are resolved against, e.g. a tenant
+    | with slug "acme" is reachable at "acme.{tenant_root_domain}". Consumed
+    | by App\Http\Middleware\ResolveTenant — see PROGRESS.md Phase 2.A and
+    | DOCUMENTATION.md §5.1.
+    |
+    */
+
+    'tenant_root_domain' => env('TENANT_ROOT_DOMAIN'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Encryption Key
     |--------------------------------------------------------------------------
     |

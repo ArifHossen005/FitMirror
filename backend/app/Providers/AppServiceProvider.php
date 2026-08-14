@@ -2,9 +2,15 @@
 
 namespace App\Providers;
 
+use App\Auth\TenantUnawareUserProvider;
+use App\Models\PersonalAccessToken;
+use App\Support\TenantContext;
 use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Validation\Rules\Password;
+use Laravel\Sanctum\Sanctum;
 use Laravel\Telescope\TelescopeServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -22,6 +28,12 @@ class AppServiceProvider extends ServiceProvider
             $this->app->register(TelescopeServiceProvider::class);
             $this->app->register(\App\Providers\TelescopeServiceProvider::class);
         }
+
+        // Singleton, not a fresh instance per resolution — ResolveTenant
+        // middleware sets it once per request and every BelongsToTenant
+        // query (TenantScope) must see that same instance. See
+        // TenantContext's own docblock for the queue-worker caveat.
+        $this->app->singleton(TenantContext::class);
     }
 
     /**
@@ -30,6 +42,38 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->configureRateLimiters();
+        $this->configurePasswordPolicy();
+
+        // See App\Models\PersonalAccessToken's docblock — without this,
+        // every auth:sanctum request against a tenant User fails to
+        // resolve because TenantScope fails closed and no tenant context
+        // exists yet at the point a token is being resolved.
+        Sanctum::usePersonalAccessTokenModel(PersonalAccessToken::class);
+
+        // See App\Auth\TenantUnawareUserProvider's docblock — the `users`
+        // provider (config/auth.php) uses this driver instead of the
+        // default `eloquent` one, so the password reset broker can find a
+        // User by email before any tenant context exists.
+        Auth::provider('tenant_unaware_eloquent', function ($app, array $config) {
+            return new TenantUnawareUserProvider($app['hash'], $config['model']);
+        });
+    }
+
+    /**
+     * The single password policy every `password` => ['required',
+     * Password::defaults()] validation rule in the app inherits — see
+     * PROGRESS.md Phase 2.B "Implement password policy". `uncompromised()`
+     * checks the password against the Have I Been Pwned k-anonymity API on
+     * every validation; tests fake that HTTP call (see
+     * tests/Feature/Auth/RegisterTest.php) rather than hitting the network.
+     */
+    private function configurePasswordPolicy(): void
+    {
+        Password::defaults(fn () => Password::min(10)
+            ->mixedCase()
+            ->numbers()
+            ->symbols()
+            ->uncompromised());
     }
 
     /**

@@ -32,6 +32,14 @@ return [
         'pending_approval' => 'Your account is pending approval. We will notify you once it is reviewed.',
     ],
 
+    'mission' => [
+        'suspended' => 'This Mission Control account has been suspended.',
+    ],
+
+    'auth' => [
+        'invalid_credentials' => 'These credentials do not match our records.',
+    ],
+
     'plan' => [
         'limit_exceeded' => 'You have reached the limit for your current plan.',
         'feature_locked' => 'This feature is not available on your current plan.',

@@ -19,7 +19,7 @@ class DatabaseSeeder extends Seeder
     {
         $this->call([
             // PlanSeeder::class,           // Phase 3.A — Free/Pro/Max plans
-            // SuperAdminSeeder::class,     // Phase 1.C — seeded from SUPER_ADMIN_EMAIL/.env
+            SuperAdminSeeder::class,        // Phase 1.C — seeded from SUPER_ADMIN_EMAIL/.env
             // RolePermissionSeeder::class, // Phase 2.C — Owner/Manager/Staff roles
             // CategorySeeder::class,       // Phase 5.A — default Bangladeshi apparel taxonomy
         ]);

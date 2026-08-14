@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\SuperAdmin;
 use App\Models\User;
 
 return [
@@ -42,6 +43,17 @@ return [
             'driver' => 'session',
             'provider' => 'users',
         ],
+
+        // Mission Control's own guard (PROGRESS.md Phase 1.C). Sanctum's
+        // token guard is registered per-`provider`, so a token issued to a
+        // SuperAdmin only ever authenticates against this guard — never
+        // against the tenant-facing `sanctum` guard (provider: users), and
+        // vice versa. Applied via ->middleware('auth:super_admin'), never
+        // the bare 'auth:sanctum', on every routes/api_mission.php route.
+        'super_admin' => [
+            'driver' => 'sanctum',
+            'provider' => 'super_admins',
+        ],
     ],
 
     /*
@@ -62,9 +74,17 @@ return [
     */
 
     'providers' => [
+        // 'tenant_unaware_eloquent', not the default 'eloquent' — see
+        // App\Auth\TenantUnawareUserProvider's docblock. Registered via
+        // Auth::provider() in AppServiceProvider::boot().
         'users' => [
-            'driver' => 'eloquent',
+            'driver' => 'tenant_unaware_eloquent',
             'model' => env('AUTH_MODEL', User::class),
+        ],
+
+        'super_admins' => [
+            'driver' => 'eloquent',
+            'model' => SuperAdmin::class,
         ],
 
         // 'users' => [

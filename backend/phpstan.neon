@@ -5,9 +5,18 @@ includes:
 parameters:
     paths:
         - app
+        - tests
 
     # Level 6: type-coverage checks on top of level 5 (missing typehints on
     # properties/params/returns are flagged). Level 6 was chosen over max (9)
     # as the realistic floor for a fast-moving early build — see PROGRESS.md
     # Phase 1.A. Revisit raising it once the domain models stabilise.
     level: 6
+
+    # Off by default in Larastan (extension.neon). Every model in this
+    # codebase declares casts via the Laravel 12 `protected function
+    # casts(): array` method (D-06/D-09 convention), never the legacy
+    # `protected $casts` property — without this flag Larastan can't see
+    # those casts at all, so every cast attribute (including enum casts
+    # like SuperAdmin::$role/$status) silently reports as `string`.
+    parseModelCastsMethod: true
