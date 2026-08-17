@@ -10,7 +10,8 @@
     "analytics": "অ্যানালিটিক্স",
     "staff": "স্টাফ",
     "settings": "সেটিংস",
-    "billing": "বিলিং"
+    "billing": "বিলিং",
+    "auditLog": "অ্যাক্টিভিটি লগ"
   },
   "actions": {
     "save": "সংরক্ষণ করুন",
@@ -39,7 +40,12 @@
   "auth": {
     "email": "ইমেইল",
     "password": "পাসওয়ার্ড",
+    "confirmPassword": "পাসওয়ার্ড নিশ্চিত করুন",
     "forgotPassword": "পাসওয়ার্ড ভুলে গেছেন?",
-    "rememberMe": "মনে রাখুন"
+    "rememberMe": "মনে রাখুন",
+    "name": "পূর্ণ নাম",
+    "phone": "ফোন",
+    "tenantName": "দোকানের নাম",
+    "role": "ভূমিকা"
   }
 }

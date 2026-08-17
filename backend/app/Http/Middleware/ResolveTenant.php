@@ -2,7 +2,9 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\PersonalAccessToken;
 use App\Models\Tenant;
+use App\Models\User;
 use App\Support\TenantContext;
 use Closure;
 use Illuminate\Http\Request;
@@ -82,10 +84,48 @@ class ResolveTenant
         return Tenant::query()->where('slug', $slug)->first();
     }
 
+    /**
+     * Deliberately a direct PersonalAccessToken lookup, never
+     * `$request->user()` or `Auth::guard('sanctum')->user()`. Two
+     * independent problems ruled those out:
+     *
+     *   1. This middleware is prepended to the whole `api` group
+     *      (bootstrap/app.php) and runs *before* any route's own
+     *      `auth:sanctum` middleware. Bare `$request->user()` resolves
+     *      against `config('auth.defaults.guard')` ('web', session-based),
+     *      which is never authenticated on this API-only app — this
+     *      fallback silently never fired until Phase 2.C's first route to
+     *      depend on it (EnsureTenantIsActive) surfaced it as every staff/
+     *      audit-log request 404ing with "Tenant not found" despite a
+     *      valid Bearer token.
+     *   2. `Auth::guard('sanctum')` looked like the fix, but Laravel's
+     *      AuthManager caches guard instances for the container's lifetime
+     *      (`$this->guards[$name] ??=`), and Sanctum's RequestGuard caches
+     *      its resolved user on top of that. In a single test method that
+     *      makes sequential requests as two different principals (e.g.
+     *      Mission Control's ImpersonationTest — a SuperAdmin token, then
+     *      the impersonated User's token), the second call's `user()`
+     *      silently returned the *first* call's cached principal. A fresh,
+     *      request-scoped token lookup sidesteps guard caching entirely —
+     *      the same class of bug as Decision D-13's two login-time scope
+     *      failures, caught the same way: a real feature test making real
+     *      sequential requests, not inspection.
+     */
     private function resolveFromAuthenticatedUser(Request $request): ?Tenant
     {
-        $user = $request->user();
-        $tenantId = $user?->getAttribute('tenant_id');
+        $bearerToken = $request->bearerToken();
+
+        if (empty($bearerToken)) {
+            return null;
+        }
+
+        $accessToken = PersonalAccessToken::findToken($bearerToken);
+
+        if (!$accessToken || !$accessToken->tokenable instanceof User) {
+            return null;
+        }
+
+        $tenantId = $accessToken->tokenable->getAttribute('tenant_id');
 
         if (empty($tenantId)) {
             return null;

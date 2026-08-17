@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\EnforcePlanFeature;
 use App\Http\Middleware\EnsureSuperAdmin;
 use App\Http\Middleware\EnsureTenantIsActive;
 use App\Http\Middleware\EnsureTwoFactorIsEnabled;
@@ -48,6 +49,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'super_admin' => EnsureSuperAdmin::class,
             'tenant.active' => EnsureTenantIsActive::class,
             'tenant.2fa' => EnsureTwoFactorIsEnabled::class,
+            'plan.feature' => EnforcePlanFeature::class,
         ]);
 
         // FitMirror is API-only — there is no web 'login' route to redirect

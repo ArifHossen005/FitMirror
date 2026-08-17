@@ -3,24 +3,27 @@
 namespace App\Http\Controllers\Api\V1\Auth;
 
 use App\Http\Controllers\Api\V1\BaseApiController;
+use App\Services\Plan\PlanService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 /**
- * GET /api/v1/auth/me — the authenticated user, their tenant, plan, and
- * limits. `plan`/`limits` are honestly `null`/empty today: `plans` and
- * `plan_limits` don't exist until Phase 3.A, and this endpoint returns
- * what's real right now rather than fabricating placeholder values ahead
- * of that table existing. `permissions` is likewise `[]` until Phase 2.C
- * seeds real roles — every user is implicitly a full-access owner until
- * then, since RBAC doesn't exist yet to say otherwise.
+ * GET /api/v1/auth/me — the authenticated user, their tenant, plan,
+ * limits, roles, and permissions. `plan`/`limits` reflect the tenant's
+ * resolved plan (Phase 3.A — PlanService::resolve() falls back to Free for
+ * a tenant that hasn't been through checkout yet, so this is never null in
+ * practice). `roles`/`permissions` reflect spatie/laravel-permission
+ * (Phase 2.C) — empty for a user with no role assigned yet (should not
+ * normally happen post-2.C: registration assigns 'owner', invitation
+ * acceptance assigns the invited role).
  */
 class MeController extends BaseApiController
 {
-    public function __invoke(Request $request): JsonResponse
+    public function __invoke(Request $request, PlanService $plans): JsonResponse
     {
         $user = $request->user();
         $tenant = $user->tenant;
+        $plan = $tenant ? $plans->resolve($tenant) : null;
 
         return $this->success([
             'user' => [
@@ -42,9 +45,14 @@ class MeController extends BaseApiController
                 'slug' => $tenant->slug,
                 'status' => $tenant->status->value,
             ] : null,
-            'plan' => null,
-            'limits' => [],
-            'permissions' => [],
+            'plan' => $plan ? [
+                'id' => $plan->id,
+                'name' => $plan->name,
+                'slug' => $plan->slug,
+            ] : null,
+            'limits' => $plan ? $plan->limits->mapWithKeys(fn ($limit) => [$limit->key => $limit->value])->all() : [],
+            'roles' => $user->getRoleNames(),
+            'permissions' => $user->getAllPermissions()->pluck('name'),
         ]);
     }
 }

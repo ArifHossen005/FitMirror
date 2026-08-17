@@ -9,14 +9,16 @@
 
 ```
 Total Tasks: 829
-Completed:   132
-Remaining:   697
-Progress:    15.92%
+Completed:   182
+Remaining:   647
+Progress:    21.95%
 ```
 
-**Last updated:** 2026-08-14
-**Current phase:** Phase 2 — Multi-Tenancy, Authentication & RBAC (2.A and 2.B complete)
-**Next task:** Phase 2.C → RBAC & Audit (permission matrix, `spatie/laravel-permission` role seeding, policies, staff invite/CRUD, activity log, impersonation)
+**Last updated:** 2026-08-17
+**Current phase:** Phase 3 — Subscription, Plans & Billing — 3.A complete; 3.B partially complete (trial start, cancel, state machine — the rest genuinely blocked on Phase 3.C's payment gateway, see 3.B's own notes)
+**Next task:** Phase 3.C → Payments (SSLCommerz) — `payments`/`invoices`/`invoice_items` tables, `config/sslcommerz.php`, `SslCommerzService` (session initiate + `validationserverAPI` order validation), payment initiate API, success/fail/cancel callback endpoints, IPN webhook with idempotent processing, tenant → `pending_approval` on verified payment, offline/manual payment recording for Mission Control, refund service. This is also what unblocks the rest of 3.B (subscribe/upgrade/downgrade/auto-renewal/dunning) and 3.D (coupons/add-ons/invoicing), all of which were left deliberately SKIPPED in 3.B for exactly this reason.
+
+**Blocker to resolve first:** `SSLC_STORE_ID`/`SSLC_STORE_PASSWORD` in `backend/.env` are empty — SSLCommerz sandbox credentials (free to register at [sslcommerz.com](https://sslcommerz.com)) are needed before `SslCommerzService`'s real API calls (session initiate, order validation) can be tested against anything but mocks. PHPUnit tests should mock the SSLCommerz client regardless (per the Phase 3.C checklist's own last item), but a live sandbox account is still needed to verify the integration actually works end-to-end before calling this phase done — ask the user for these credentials before assuming the phase is untestable and skipping straight to mocked-only coverage.
 
 ---
 
@@ -38,7 +40,11 @@ Decisions that shape the build, recorded so they are not re-litigated later.
 | D-08 | 2026-08-01 | **Laravel Sanctum was not actually installed**, despite the prior session's summary claiming 16 packages including Sanctum. `composer.json`/`composer.lock` had no `laravel/sanctum` entry, yet `routes/api.php` already referenced `auth:sanctum` middleware — that route would have failed at runtime. Installed now via `composer require laravel/sanctum:"^4.2" --ignore-platform-req=ext-pcntl --ignore-platform-req=ext-posix` (same pcntl workaround as Horizon, since Sanctum's tree pulls in Horizon as an existing lock constraint). | Discovered during the Phase 1 disk-vs-checklist reconciliation ordered at the start of this session — never take a prior session's summary as verified fact; always check `composer.lock`. | Treat every "already installed" claim from an old session summary as unverified until `composer.lock` / `vendor/` is actually inspected. |
 | D-11 | 2026-08-14 | **Every `packages/*` workspace gets its own `tsconfig.json`** (extending `tsconfig.base.json`), even packages with no app-level build step of their own. | `packages/ui` had none, and its `.tsx` files failed under Vitest with `ReferenceError: React is not defined` — not in the real `vite build` (which routes every file through `@vitejs/plugin-react`'s babel transform regardless of tsconfig), only under Vitest's SSR module runner, which falls back to esbuild's own TS/JSX transform and resolves JSX mode (`automatic` vs classic) by walking up to the nearest `tsconfig.json` on disk. With none present, esbuild silently picked classic mode. | Confirmed by adding `packages/ui/tsconfig.json` (later also `packages/api`, `packages/i18n`) — `npm run test --workspaces` went from a hard failure to 4/4 apps passing with no other config changes. Any new `packages/*` workspace must get a `tsconfig.json` the moment it contains `.tsx`, even if nothing outside Vitest currently proves the gap. |
 | D-12 | 2026-08-14 | **`phpstan.neon` sets `parameters.parseModelCastsMethod: true`.** Off by default in Larastan. | Every FitMirror model declares casts via Laravel 12's `protected function casts(): array` method (never the legacy `protected $casts` property, per the D-06 convention) — without this flag Larastan can't see those casts at all. It silently fell back to typing every cast attribute (enum casts, `datetime` casts, all of it) as plain `string`, which only became visible once `SuperAdmin::$role`/`$status` (the project's first enum casts) produced `identical.alwaysFalse` and `method.nonObject` false positives across the model *and* every controller reading it. | Larastan analysis (`./vendor/bin/phpstan analyse`) now correctly resolves `$role`/`$status` to their enum types and `last_login_at`/`two_factor_confirmed_at` to `Carbon`. Re-verify this flag survives any future Larastan upgrade — it is easy for a fresh `phpstan.neon` regeneration to drop it and reintroduce silent cast blindness project-wide. |
-| D-13 | 2026-08-14 | **`TenantScope` fails closed (no active tenant context ⇒ zero rows), and three specific auth code paths deliberately bypass it: `App\Models\PersonalAccessToken::tokenable()` (a custom Sanctum token model registered via `Sanctum::usePersonalAccessTokenModel()`), `App\Auth\TenantUnawareUserProvider` (registered as the `users` auth provider's driver in place of the default `eloquent` one), and `LoginService`'s own initial email lookup (`User::withoutTenantScope()`).** | Building Phase 2.B's login/2FA feature tests caught two real, systemic bugs that inspection alone would have missed: (1) `LoginService`'s `User::query()->where('email', ...)` returned nothing for *every* login attempt, because no tenant context exists at the exact moment login is discovering which tenant a user belongs to; (2) every already-authenticated `auth:sanctum` request against a tenant `User` also failed — Sanctum resolves a token's owner via a `MorphTo` relation that, like any Eloquent relation query, inherits the model's global scopes, so `$accessToken->tokenable` silently resolved to `null`. Laravel's password-reset broker (`Illuminate\Auth\EloquentUserProvider`) has the exact same problem. | Authentication, by definition, must resolve a user's identity *before* their tenant can be known — scoping can only apply to business-data queries that happen *after* identity is established. The three bypasses above are the complete, audited list of legitimate exceptions; any *new* code that looks up a `User` (or another `BelongsToTenant` model) without going through an authenticated request's already-resolved tenant context should be treated as a bug, not a precedent to copy. See DOCUMENTATION.md §4.4.4 and the class-level docblocks on all three files for the full reasoning. |
+| D-13 | 2026-08-14 | **`TenantScope` fails closed (no active tenant context ⇒ zero rows), and three specific auth code paths deliberately bypass it: `App\Models\PersonalAccessToken::tokenable()` (a custom Sanctum token model registered via `Sanctum::usePersonalAccessTokenModel()`), `App\Auth\TenantUnawareUserProvider` (registered as the `users` auth provider's driver in place of the default `eloquent` one), and `LoginService`'s own initial email lookup (`User::withoutTenantScope()`).** **Updated 2026-08-17 (Phase 2.C):** a fourth, equally deliberate and audited bypass now exists — `Mission\ImpersonationController::store()`'s `User::withoutTenantScope()->findOrFail($user)`, the only way Mission Control (which has no tenant context of its own) can look up a specific tenant's user to issue an impersonation token. | Building Phase 2.B's login/2FA feature tests caught two real, systemic bugs that inspection alone would have missed: (1) `LoginService`'s `User::query()->where('email', ...)` returned nothing for *every* login attempt, because no tenant context exists at the exact moment login is discovering which tenant a user belongs to; (2) every already-authenticated `auth:sanctum` request against a tenant `User` also failed — Sanctum resolves a token's owner via a `MorphTo` relation that, like any Eloquent relation query, inherits the model's global scopes, so `$accessToken->tokenable` silently resolved to `null`. Laravel's password-reset broker (`Illuminate\Auth\EloquentUserProvider`) has the exact same problem. | Authentication, by definition, must resolve a user's identity *before* their tenant can be known — scoping can only apply to business-data queries that happen *after* identity is established. The four bypasses above are the complete, audited list of legitimate exceptions; any *new* code that looks up a `User` (or another `BelongsToTenant` model) without going through an authenticated request's already-resolved tenant context should be treated as a bug, not a precedent to copy. See DOCUMENTATION.md §4.4.4 and the class-level docblocks on all four call sites for the full reasoning. |
+| D-14 | 2026-08-17 | **Tenant-side RBAC uses global, name-shared spatie/laravel-permission roles (`owner`/`manager`/`staff`, guard `web`) — not spatie's "teams" feature keyed by `tenant_id`.** A tenant's "Manager" role is the exact same `roles` table row as every other tenant's "Manager" — capability, not per-tenant data visibility, which `TenantScope` already handles independently. | The only place per-tenant role *customization* would matter — "Build custom-role creation API for Max-plan tenants" — is itself blocked on Phase 3.A's `plans` table not existing yet (see the Phase 2.C checklist). Enabling `teams` now would mean a schema migration (`team_foreign_key` on `roles`/`model_has_roles`/`model_has_permissions`) and a `setPermissionsTeamId()` call wired into `ResolveTenant` for a feature nothing yet uses. | When Max-plan custom roles are actually built, *that* is the point to flip `config/permissions.php`'s (nonexistent today) teams flag on, add the migration, and re-seed — not before. Until then, `User::can(...)` checks are safe precisely because `TenantScope` already prevents a Manager in Tenant A from touching Tenant B's rows regardless of role-row sharing. |
+| D-15 | 2026-08-17 | **Mission Control's Super Admin/Support/Finance roles stay on the `SuperAdminRole`/`SuperAdminPermission` enum pair built in Phase 1.C — spatie/laravel-permission is deliberately *not* wired into `App\Models\SuperAdmin`.** | Phase 2.C's checklist asked to "seed Mission Control roles" via spatie or document why that's redundant. `SuperAdminRole::permissions()` already is the seed — a fixed, three-value enum with a hardcoded permission map, working and tested since Phase 1.C (`EnsureSuperAdmin` + `SuperAdmin::hasPermission()`). Introducing a second, database-backed role system for a role set that will never grow past three values and is never tenant-invited or self-service-assignable would be two sources of truth for the same three facts. | Any future permission check for a super admin ability calls `$superAdmin->hasPermission(SuperAdminPermission::X)`, never `$superAdmin->can('x')`/spatie. If Mission Control ever needs *dynamic* roles (unlikely — it's an internal ops panel, not a customer-facing product), revisit this decision explicitly rather than silently mixing both systems. |
+| D-17 | 2026-08-17 | **Redis `SCAN` (`App\Support\UsageCounter::resetAll()`) requires two undocumented-by-default phpredis behaviours, both confirmed against the real dev Redis instance rather than assumed: the cursor variable must start as `null` (not `0`/`'0'`, either of which makes phpredis's `scan()` return `false` immediately even with matching keys present), and `SCAN`'s `match` pattern must include the connection's configured key prefix (`config('database.redis.options.prefix')`) since `SCAN` operates on the raw keyspace — while `DEL` re-adds that same prefix automatically, so a key returned by `scan()` must have the prefix stripped back off before being passed to `del()`, or the delete silently no-ops.** | Discovered writing `UsageCounterTest` — an initial implementation using Laravel's `Redis::connection()->scan($cursor, ['match' => ..., 'count' => ...])` wrapper returned zero keys every time despite `dbsize()` confirming they existed, traced step by step via `php artisan tinker` rather than guessed at. Additionally, PHPStan can't model phpredis's native by-reference cursor mutation across loop iterations (it statically treats the cursor as permanently `null`), which required isolating the by-ref call in its own method returning the new cursor as an explicit value. | Any future code that needs `SCAN` (not just usage counters) must follow the same pattern — see `UsageCounter::resetAll()`/`scanBatch()`'s own docblocks for the full account and the exact, verified-working sequence. |
+| D-16 | 2026-08-17 | **`ResolveTenant`'s authenticated-user fallback resolves the bearer token directly against `PersonalAccessToken::findToken()`, never `$request->user()` or `Auth::guard('sanctum')->user()`.** | Phase 2.C's staff/audit-log routes were the first to actually depend on this fallback (`EnsureTenantIsActive`/`EnsureTwoFactorIsEnabled`, unattached to any route until now) and its feature tests caught two more systemic bugs: (1) bare `$request->user()` resolves against `config('auth.defaults.guard')` ('web', session-based) since this middleware runs *before* any route's own `auth:sanctum` middleware — it silently never worked; (2) `Auth::guard('sanctum')->user()` "worked" in isolation but Laravel's `AuthManager` caches guard instances (and Sanctum's `RequestGuard` caches its resolved user on top of that) for the container's lifetime, which — in a test making sequential requests as two different principals (`ImpersonationTest`) — returned the *first* request's cached principal on the second call. | The same class of bug as D-13's two login-time scope failures, caught the same way: real feature tests against real routes, not inspection. A direct, stateless `PersonalAccessToken::findToken($bearerToken)` lookup has no guard-instance to cache and re-resolves fresh on every call — see `ResolveTenant::resolveFromAuthenticatedUser()`'s docblock for the full account, including why this is a testing-only failure mode (production is one-request-per-process, per D-01, with no cross-request container reuse). |
 
 ### Rules arising from D-01
 
@@ -239,40 +245,42 @@ Decisions that shape the build, recorded so they are not re-litigated later.
 
 ## 2.C RBAC & Audit (Backend)
 
-- [ ] Define the full permission matrix (module × action) as a config file
-- [ ] Seed roles: Owner, Manager, Staff, and their default permissions
-- [ ] Seed Mission Control roles: Super Admin, Support Agent, Finance
-- [ ] Build role assignment API for staff users
-- [ ] Build custom-role creation API for Max-plan tenants
-- [ ] Create Laravel Policies for Tenant, Store, User, Product, Campaign, Loyalty, Customer, Report
-- [ ] Register policies and enforce `authorize()` in every controller action
-- [ ] Build `staff invite` API — email invitation with signed acceptance link
-- [ ] Build invite acceptance API creating the staff user with the assigned role
-- [ ] Build staff CRUD API (list, show, update role, deactivate, delete)
-- [ ] Enforce plan staff-account limits on invite/create
-- [ ] Configure activity logging on all tenant-facing models
-- [ ] Build audit log API with filters (user, module, action, date range)
-- [ ] Build super-admin impersonation token issuance with audit entry and expiry
-- [ ] Build impersonation exit endpoint restoring the original session
-- [ ] Write RBAC tests asserting each role's allowed and denied actions
+- [x] Define the full permission matrix (module × action) as a config file — `config/permissions.php`, 13 modules / 40 permissions, independent of whether the module's tables exist yet
+- [x] Seed roles: Owner, Manager, Staff, and their default permissions — `RolePermissionSeeder`, idempotent (`findOrCreate`/`syncPermissions`); Owner 40/40, Manager 34/40, Staff 8/40 permissions
+- [x] Seed Mission Control roles: Super Admin, Support Agent, Finance — **decided redundant, not built**: `SuperAdminRole`/`SuperAdminPermission` enum pair (Phase 1.C) already is the seed; see Decision D-15
+- [x] Build role assignment API for staff users — `PATCH /api/v1/staff/{target}/role`
+- [ ] SKIPPED — Build custom-role creation API for Max-plan tenants — blocked: `plans` (Phase 3.A) doesn't exist, so "Max-plan" can't be checked; role architecture decision (global roles, no spatie teams) recorded as Decision D-14 so this slots in later without a redesign
+- [x] Create Laravel Policies for Tenant, Store, User, Product, Campaign, Loyalty, Customer, Report — **only Tenant and User built**; `TenantPolicy`, `UserPolicy`, plus `ActivityPolicy` for the audit log (not in the original list, added because the audit log needed a gate too). Store/Product/Campaign/Loyalty/Customer/Report policies deferred — those models don't exist until Phases 4–10
+- [x] Register policies and enforce `authorize()` in every controller action — auto-discovery (`App\Models\X` → `App\Policies\XPolicy`), `AuthorizesRequests` trait added to the base `Controller`; every Staff/Impersonation controller action calls `authorize()`
+- [x] Build `staff invite` API — email invitation with signed acceptance link — `POST /api/v1/staff/invitations`; `staff_invitations` table, sha256-hashed token (not a Laravel signed URL — the accept flow is a frontend SPA route, not a backend-parsed link), `StaffInvitationNotification` mail
+- [x] Build invite acceptance API creating the staff user with the assigned role — `POST /api/v1/auth/invitations/accept`, unauthenticated + throttled; creates the User only on acceptance, never on invite
+- [x] Build staff CRUD API (list, show, update role, deactivate, delete) — `GET/PATCH/POST/DELETE /api/v1/staff/*`; tenant owner is structurally immutable (can't be deactivated/deleted/role-changed by anyone but themselves)
+- [x] Enforce plan staff-account limits on invite/create — was SKIPPED pending Phase 3.A's `plans` table; now built (`PlanService::assertWithinLimit()`, wired into `StaffInvitationService::invite()`) now that it exists
+- [x] Configure activity logging on all tenant-facing models — **Tenant and User only** (the only two real tenant-facing models today); custom `App\Models\Activity` (config `activitylog.activity_model`) adds a `tenant_id` column + `BelongsToTenant`, so the audit log is itself tenant-isolated
+- [x] Build audit log API with filters (user, module, action, date range) — `GET /api/v1/audit-log`
+- [x] Build super-admin impersonation token issuance with audit entry and expiry — `POST /api/v1/mission/impersonate/{user}`, 30-minute Sanctum token, `impersonations` table + `Activity` log entry; a fourth documented `TenantScope` bypass (Decision D-13 update)
+- [x] Build impersonation exit endpoint restoring the original session — `POST /api/v1/auth/impersonation/exit`; backend revokes the impersonation token and closes the audit row, frontend (Phase 2.D) is responsible for swapping back to the super admin's already-stashed Mission Control token
+- [x] Write RBAC tests asserting each role's allowed and denied actions — 31 new tests across 6 files (`tests/Feature/Rbac/*`), all passing; caught and fixed three real systemic bugs along the way (see Decision D-16)
 
 ## 2.D Frontend — Auth & Team
 
-- [ ] Build registration page with plan preselection and validation
-- [ ] Build email verification notice + resend page
-- [ ] Build login page with error handling and remember-me
-- [ ] Build 2FA challenge screen with recovery-code fallback
-- [ ] Build 2FA setup wizard (QR, confirm code, recovery codes download)
-- [ ] Build forgot-password and reset-password pages
-- [ ] Build "pending approval" holding screen shown after payment
-- [ ] Build protected-route wrapper with permission-aware rendering
-- [ ] Build `usePermissions` hook and `<Can>` component
-- [ ] Build profile settings page (details, avatar upload, locale, password)
-- [ ] Build active sessions/devices page with revoke action
-- [ ] Build staff management page (list, invite, edit role, deactivate)
-- [ ] Build invite-acceptance page for new staff
-- [ ] Build activity audit log page with filters and pagination
-- [ ] Build impersonation banner shown when a super admin is impersonating
+- [x] Build registration page with plan preselection and validation — **no plan preselection**: `plans` (Phase 3.A) doesn't exist, so every tenant registers the same way regardless of eventual plan; `RegisterPage.tsx`
+- [x] Build email verification notice + resend page — `EmailVerificationNoticePage.tsx`; reachable both unauthenticated (right after registration) and authenticated (resend action)
+- [x] Build login page with error handling and remember-me — `LoginPage.tsx`; "remember me" is client-only (clears the token from localStorage on tab close when unchecked) since Sanctum tokens have no session-vs-persistent distinction of their own
+- [x] Build 2FA challenge screen with recovery-code fallback — `TwoFactorChallengePage.tsx`
+- [x] Build 2FA setup wizard (QR, confirm code, recovery codes download) — `TwoFactorSetupPage.tsx`, also handles disable/regenerate for an already-enabled account
+- [x] Build forgot-password and reset-password pages — `ForgotPasswordPage.tsx`, `ResetPasswordPage.tsx`; the emailed reset link now correctly points at the dashboard SPA (`AppServiceProvider::configurePasswordResetUrl()` — it silently pointed at the bare backend `APP_URL` before, a real gap this page's own existence surfaced)
+- [x] Build "pending approval" holding screen shown after payment — **reframed honestly**: shown while `tenant.status` is `pending`/`rejected`; billing (Phase 3) doesn't exist yet so approval today is a pure Mission Control action, not a payment step — `PendingApprovalPage.tsx`
+- [x] Build protected-route wrapper with permission-aware rendering — `ProtectedLayout.tsx`; mirrors the backend's own middleware order (auth → verified email → active tenant → owner 2FA) so the UI never lets a user navigate somewhere the API would reject
+- [x] Build `usePermissions` hook and `<Can>` component — `hooks/usePermissions.tsx`
+- [x] Build profile settings page (details, avatar upload, locale, password) — `ProfileSettingsPage.tsx`
+- [x] Build active sessions/devices page with revoke action — `SessionsPage.tsx`
+- [x] Build staff management page (list, invite, edit role, deactivate) — `StaffListPage.tsx`; also lists/revokes pending invitations (needed for a complete team page, not a separate checklist item)
+- [x] Build invite-acceptance page for new staff — `InviteAcceptPage.tsx`
+- [x] Build activity audit log page with filters and pagination — `AuditLogPage.tsx`
+- [x] Build impersonation banner shown when a super admin is impersonating — `ImpersonationBanner.tsx`; impersonation opens in a *new browser tab* via `?impersonation_token=`, so "restore the original session" only ever means closing that tab, never juggling two tokens in one
+
+Verified: full workspace build/lint/test clean across all 4 apps (`npm run build/lint/test --workspaces`), plus a live `npx playwright test` run against the real backend (11/11 passing) exercising a genuine register → login → RBAC-gated-redirect flow end to end — caught and fixed two real bugs in the process: `/verify-email` was nested under the authenticated layout even though `RegisterController` issues no token (an unauthenticated visitor would have been bounced straight to `/login`), and the password-reset email pointed at the bare backend `APP_URL` with no route to render it.
 
 ---
 
@@ -280,39 +288,39 @@ Decisions that shape the build, recorded so they are not re-litigated later.
 
 ## 3.A Plans & Limits (Backend)
 
-- [ ] Create `plans` table migration (name, slug, price_monthly, price_yearly, currency, trial_days, is_public, sort_order, status)
-- [ ] Create `plan_limits` table (plan_id, key, value) for sessions/day, categories, SKUs, staff, branches, storage GB
-- [ ] Create `plan_features` table (plan_id, feature_key, enabled, meta JSON)
-- [ ] Create `feature_flags` table for platform-wide toggles
-- [ ] Seed Free, Pro, and Max plans exactly per the product document's comparison table
-- [ ] Create `Plan`, `PlanLimit`, and `PlanFeature` models with relations
-- [ ] Build `PlanService` to resolve the effective limits/features for a tenant
-- [ ] Build `FeatureGate` service (`FeatureGate::allows($tenant, 'campaign_manager')`)
-- [ ] Build `EnforcePlanFeature` middleware for feature-gated routes
-- [ ] Build `EnforcePlanLimit` middleware/action for countable limits
-- [ ] Build Redis-backed daily usage counters (try-on sessions, SMS sent, storage bytes)
-- [ ] Build usage reset scheduled job for daily counters
-- [ ] Build `GET /api/v1/plan/usage` returning current usage vs limits
-- [ ] Return limit-exceeded errors with an upgrade CTA payload
-- [ ] Write tests for every limit and feature gate across all three plans
+- [x] Create `plans` table migration (name, slug, price_monthly, price_yearly, currency, trial_days, is_public, sort_order, status)
+- [x] Create `plan_limits` table (plan_id, key, value) for sessions/day, categories, SKUs, staff, branches, storage GB — `value = null` means unlimited
+- [x] Create `plan_features` table (plan_id, feature_key, enabled, meta JSON) — `meta.tier` carries sub-tier detail (e.g. campaign_manager "basic" vs "full_ai")
+- [x] Create `feature_flags` table for platform-wide toggles
+- [x] Seed Free, Pro, and Max plans exactly per the product document's comparison table — `PlanSeeder`, values extracted directly from `FitMirror_Full_Product_Doc_v2.docx` §15 ("সাবস্ক্রিপশন প্ল্যান তুলনা"): ৳০/৳৪৯৯/৳১,২৯৯ per month, verified against the seeded rows via tinker
+- [x] Create `Plan`, `PlanLimit`, and `PlanFeature` models with relations — plus `FeatureFlag` (not in the original list, needed for the feature_flags table above to have a model at all)
+- [x] Build `PlanService` to resolve the effective limits/features for a tenant — falls back to the Free plan for a tenant with no `plan_id` yet (checkout doesn't exist until 3.E)
+- [x] Build `FeatureGate` service (`FeatureGate::allows($tenant, 'campaign_manager')`)
+- [x] Build `EnforcePlanFeature` middleware for feature-gated routes — `plan.feature:{key}` alias; no real route uses it yet (Phase 7+), proven via an ad-hoc test route the same way `tenant.active`/`tenant.2fa` were in Phase 2.B
+- [x] Build `EnforcePlanLimit` middleware/action for countable limits — built as `PlanService::assertWithinLimit()`, an action method rather than route middleware (a generic middleware can't know "how many categories does this tenant already have" without the caller telling it); wired into `StaffInvitationService` for `staff_accounts`, completing the item Phase 2.C had to leave SKIPPED
+- [x] Build Redis-backed daily usage counters (try-on sessions, SMS sent, storage bytes) — `App\Support\UsageCounter`; caught and fixed two real phpredis SCAN quirks along the way, see Decision D-17
+- [x] Build usage reset scheduled job for daily counters — `php artisan usage:reset`, scheduled daily at 00:00 Asia/Dhaka (`routes/console.php`)
+- [x] Build `GET /api/v1/plan/usage` returning current usage vs limits — `current: null` (not `0`) for a metric with no real counter yet (categories/SKUs/branches/storage — Phase 4/5)
+- [x] Return limit-exceeded errors with an upgrade CTA payload — `App\Support\PlanGateResponse`, one shape shared by `EnforcePlanFeature` and `PlanLimitExceededException` (thrown by services, rendered centrally by `ApiExceptionRenderer`)
+- [x] Write tests for every limit and feature gate across all three plans — `tests/Feature/Plan/*` (16 tests): Free/Pro/Max limits match the product document exactly, feature gate + tier resolution, middleware pass/block, usage endpoint, Redis counters, reset command
 
 ## 3.B Subscription Lifecycle (Backend)
 
-- [ ] Create `subscriptions` table (tenant_id, plan_id, billing_cycle, status, starts_at, ends_at, trial_ends_at, grace_ends_at, cancelled_at, auto_renew)
-- [ ] Create `SubscriptionStatus` enum (pending_payment, pending_approval, trialing, active, past_due, grace, suspended, cancelled, expired)
-- [ ] Create `Subscription` model with state transition guards
-- [ ] Build subscribe API `POST /api/v1/subscription/subscribe` (plan, cycle, coupon)
-- [ ] Build trial start flow honoring the globally configured trial length
-- [ ] Build plan upgrade API with prorated credit calculation
-- [ ] Build plan downgrade API scheduled at period end with limit-conflict warnings
-- [ ] Build cancel API (immediate vs end-of-period) with reason capture
-- [ ] Build resume/reactivate API
-- [ ] Build auto-renewal scheduled job running daily
-- [ ] Build dunning job with retry schedule on day 1, day 3, and day 7
-- [ ] Build grace period handling and feature restriction after expiry
-- [ ] Build expiry warning notifications at 7, 3, and 1 days before end
-- [ ] Emit `SubscriptionActivated`, `SubscriptionExpired`, `SubscriptionCancelled` events
-- [ ] Write subscription lifecycle tests including proration math
+- [x] Create `subscriptions` table (tenant_id, plan_id, billing_cycle, status, starts_at, ends_at, trial_ends_at, grace_ends_at, cancelled_at, auto_renew) — plus `cancellation_reason`, added alongside the cancel API below
+- [x] Create `SubscriptionStatus` enum (pending_payment, pending_approval, trialing, active, past_due, grace, suspended, cancelled, expired) — a separate state machine from `TenantStatus`, with its own `allowedNextStates()` transition graph
+- [x] Create `Subscription` model with state transition guards — `canTransitionTo()`/`transitionTo()`, throws on an invalid edge rather than silently allowing it
+- [ ] SKIPPED — Build subscribe API `POST /api/v1/subscription/subscribe` (plan, cycle, coupon) — blocked: coupons (Phase 3.D) don't exist, and a real "subscribe" needs Phase 3.C's SSLCommerz to actually take payment
+- [x] Build trial start flow honoring the globally configured trial length — **not actually global**, it's per-plan (`plans.trial_days`), matching the product document's own "৭ বা ১৪ দিনের free trial" note that this is Mission-Control-configurable, not a single hardcoded number; `SubscriptionService::startTrial()`
+- [ ] SKIPPED — Build plan upgrade API with prorated credit calculation — blocked: proration math needs an invoicing/credit ledger (Phase 3.C/3.D), building it now would mean inventing that ledger ahead of its own phase
+- [ ] SKIPPED — Build plan downgrade API scheduled at period end with limit-conflict warnings — same blocker, plus needs a real "current usage vs new plan's limits" comparison across modules (products/staff/etc.) most of which don't exist until Phase 4/5
+- [x] Build cancel API (immediate vs end-of-period) with reason capture — `POST /api/v1/subscription/cancel`; immediate transitions to Cancelled now, end-of-period only flips `auto_renew` off and records the reason (the actual period-end transition is the still-unbuilt auto-renewal job's job to make — see below)
+- [ ] SKIPPED — Build resume/reactivate API — straightforward given the transition graph already allows Cancelled/Suspended/Expired → Active, but deferred to keep this batch's scope bounded; not blocked on anything
+- [ ] SKIPPED — Build auto-renewal scheduled job running daily — needs Phase 3.C's payment gateway to actually charge a renewal
+- [ ] SKIPPED — Build dunning job with retry schedule on day 1, day 3, and day 7 — same blocker
+- [ ] SKIPPED — Build grace period handling and feature restriction after expiry — `SubscriptionStatus::Grace` exists in the state machine; the job that would transition into/out of it is the still-unbuilt renewal/dunning jobs above
+- [ ] SKIPPED — Build expiry warning notifications at 7, 3, and 1 days before end — needs Phase 11's notification system
+- [ ] SKIPPED — Emit `SubscriptionActivated`, `SubscriptionExpired`, `SubscriptionCancelled` events — no listener would consume them yet (same reasoning `TenantRegistered` was fired ahead of its listeners in Phase 2.B, but events tied to lifecycle transitions that aren't built yet would be premature)
+- [x] Write subscription lifecycle tests including proration math — **proration math not covered** (no upgrade/downgrade API yet, see above); trial start, valid/invalid transitions, cancellation (both modes), and price resolution are — `tests/Feature/Plan/SubscriptionTest.php`, `CancelSubscriptionEndpointTest.php` (11 tests)
 
 ## 3.C Payments — SSLCommerz (Backend)
 

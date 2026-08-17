@@ -3,6 +3,7 @@
 namespace Database\Factories;
 
 use App\Enums\TenantStatus;
+use App\Models\Plan;
 use App\Models\Tenant;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Str;
@@ -41,6 +42,19 @@ class TenantFactory extends Factory
         return $this->state(fn (array $attributes) => [
             'status' => TenantStatus::Trial,
             'trial_ends_at' => now()->addDays(14),
+        ]);
+    }
+
+    /**
+     * Assigns a real seeded plan by slug — 'free'/'pro'/'max'. Without
+     * this, PlanService::resolve() falls back to Free (staff_accounts: 1,
+     * no campaign manager, etc.), which is correct default behaviour but
+     * too limited for tests that need room for more than the owner alone.
+     */
+    public function onPlan(string $slug): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'plan_id' => Plan::query()->where('slug', $slug)->firstOrFail()->id,
         ]);
     }
 }

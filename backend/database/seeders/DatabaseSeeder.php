@@ -18,9 +18,9 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         $this->call([
-            // PlanSeeder::class,           // Phase 3.A — Free/Pro/Max plans
+            PlanSeeder::class,              // Phase 3.A — Free/Pro/Max plans
             SuperAdminSeeder::class,        // Phase 1.C — seeded from SUPER_ADMIN_EMAIL/.env
-            // RolePermissionSeeder::class, // Phase 2.C — Owner/Manager/Staff roles
+            RolePermissionSeeder::class,    // Phase 2.C — Owner/Manager/Staff roles + permission matrix
             // CategorySeeder::class,       // Phase 5.A — default Bangladeshi apparel taxonomy
         ]);
     }

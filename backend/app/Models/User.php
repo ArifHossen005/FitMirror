@@ -11,11 +11,25 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
+use Spatie\Permission\Traits\HasRoles;
 
 class User extends Authenticatable implements MustVerifyEmail
 {
     /** @use HasFactory<UserFactory> */
-    use BelongsToTenant, HasApiTokens, HasFactory, Notifiable, SoftDeletes;
+    use BelongsToTenant, HasApiTokens, HasFactory, HasRoles, LogsActivity, Notifiable, SoftDeletes;
+
+    /**
+     * spatie/laravel-permission resolves this from the model's auth guard
+     * by default, which would otherwise pick whatever guard authenticated
+     * the current request (sanctum). Pinning it to 'web' — the guard the
+     * `users` provider is actually registered under (config/auth.php) —
+     * means role/permission rows stay guard-consistent regardless of
+     * whether a given request authenticates via a Sanctum token or (in
+     * tests) a session. See Decision D-14 in PROGRESS.md.
+     */
+    protected string $guard_name = 'web';
 
     // Fully-qualified: this trait's name collides with the
     // Illuminate\Contracts\Auth\MustVerifyEmail interface imported above —
@@ -96,5 +110,19 @@ class User extends Authenticatable implements MustVerifyEmail
             ->whereKey($this->tenant_id)
             ->where('owner_id', $this->id)
             ->exists();
+    }
+
+    /**
+     * Business-meaningful fields only — never password, two_factor_secret,
+     * or two_factor_recovery_codes (already excluded by not being listed),
+     * so a leaked/misused audit log entry can never itself be a credential.
+     */
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->useLogName('user')
+            ->logOnly(['name', 'email', 'phone', 'status', 'locale'])
+            ->logOnlyDirty()
+            ->dontSubmitEmptyLogs();
     }
 }

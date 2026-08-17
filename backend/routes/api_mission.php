@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Mission\ImpersonationController;
 use App\Http\Controllers\Mission\MissionAuthController;
 use App\Http\Controllers\Mission\MissionHealthController;
 use App\Http\Controllers\Mission\MissionProfileController;
@@ -32,4 +33,8 @@ Route::middleware(['auth:super_admin', 'super_admin'])->group(function () {
 
     Route::post('/logout', [MissionAuthController::class, 'logout'])
         ->name('mission.logout');
+
+    Route::post('/impersonate/{user}', [ImpersonationController::class, 'store'])
+        ->whereNumber('user')
+        ->name('mission.impersonate.start');
 });

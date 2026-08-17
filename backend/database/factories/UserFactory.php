@@ -58,4 +58,16 @@ class UserFactory extends Factory
     {
         return $this->state(fn (array $attributes) => ['status' => $status]);
     }
+
+    /**
+     * Assigns a spatie/laravel-permission role after creation — requires
+     * RolePermissionSeeder to have run first (Tests\TestCase does this
+     * automatically for every RefreshDatabase test).
+     */
+    public function withRole(string $role): static
+    {
+        return $this->afterCreating(function (User $user) use ($role) {
+            $user->assignRole($role);
+        });
+    }
 }

@@ -46,6 +46,11 @@ class RegistrationService extends BaseService
 
             $tenant->forceFill(['owner_id' => $owner->id])->save();
 
+            // 'owner' always exists — RolePermissionSeeder runs in every
+            // environment (production db:seed --force is a Phase 16
+            // deploy-checklist step) before registration is ever reachable.
+            $owner->assignRole('owner');
+
             event(new TenantRegistered($tenant, $owner));
 
             $owner->sendEmailVerificationNotification();

@@ -24,8 +24,10 @@ class MeTest extends TestCase
         $response->assertJsonPath('data.user.email', $user->email);
         $response->assertJsonPath('data.user.is_tenant_owner', true);
         $response->assertJsonPath('data.tenant.id', $tenant->id);
-        $response->assertJsonPath('data.plan', null);
-        $response->assertJsonPath('data.limits', []);
+        // No plan_id assigned (checkout doesn't exist until Phase 3.E) —
+        // PlanService::resolve() falls back to the real seeded Free plan.
+        $response->assertJsonPath('data.plan.slug', 'free');
+        $response->assertJsonPath('data.limits.staff_accounts', 1);
         $response->assertJsonPath('data.permissions', []);
     }
 

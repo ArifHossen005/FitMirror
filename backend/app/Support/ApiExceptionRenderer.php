@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Exceptions\PlanLimitExceededException;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -24,6 +25,7 @@ class ApiExceptionRenderer
     public static function render(Throwable $e, Request $request): JsonResponse
     {
         return match (true) {
+            $e instanceof PlanLimitExceededException => PlanGateResponse::limitExceeded($e->limitKey, $e->current, $e->max),
             $e instanceof ValidationException => self::validation($e),
             $e instanceof AuthenticationException => ApiResponse::error(
                 trans('common.unauthenticated'),

@@ -107,6 +107,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Dashboard Frontend URL
+    |--------------------------------------------------------------------------
+    |
+    | The shop-owner dashboard's own origin (apps/dashboard) — distinct from
+    | KIOSK_URL/PORTAL_URL/MISSION_URL (config/cors.php). Used to build
+    | links that must open in the dashboard SPA, e.g. the staff invitation
+    | acceptance link (App\Notifications\StaffInvitationNotification).
+    |
+    */
+
+    'frontend_url' => env('FRONTEND_URL', 'http://localhost:5173'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Encryption Key
     |--------------------------------------------------------------------------
     |

@@ -10,7 +10,8 @@
     "analytics": "Analytics",
     "staff": "Staff",
     "settings": "Settings",
-    "billing": "Billing"
+    "billing": "Billing",
+    "auditLog": "Activity Log"
   },
   "actions": {
     "save": "Save",
@@ -39,7 +40,12 @@
   "auth": {
     "email": "Email",
     "password": "Password",
+    "confirmPassword": "Confirm password",
     "forgotPassword": "Forgot password?",
-    "rememberMe": "Remember me"
+    "rememberMe": "Remember me",
+    "name": "Full name",
+    "phone": "Phone",
+    "tenantName": "Shop name",
+    "role": "Role"
   }
 }

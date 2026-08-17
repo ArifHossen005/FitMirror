@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Auth\TenantUnawareUserProvider;
 use App\Models\PersonalAccessToken;
 use App\Support\TenantContext;
+use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\RateLimiter;
@@ -43,6 +44,7 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->configureRateLimiters();
         $this->configurePasswordPolicy();
+        $this->configurePasswordResetUrl();
 
         // See App\Models\PersonalAccessToken's docblock — without this,
         // every auth:sanctum request against a tenant User fails to
@@ -74,6 +76,28 @@ class AppServiceProvider extends ServiceProvider
             ->numbers()
             ->symbols()
             ->uncompromised());
+    }
+
+    /**
+     * Without this, Illuminate\Auth\Notifications\ResetPassword's default
+     * URL builder calls route('password.reset', ...) — a *web* route this
+     * API-only app never registers — and falls back to a bare backend
+     * APP_URL the dashboard SPA can't render. Points at
+     * FRONTEND_URL/reset-password instead, read by ResetPasswordPage via
+     * ?token=&email= query params, mirroring
+     * StaffInvitationNotification's identical reasoning for invite links.
+     */
+    private function configurePasswordResetUrl(): void
+    {
+        ResetPassword::createUrlUsing(function ($notifiable, string $token) {
+            $email = method_exists($notifiable, 'getEmailForPasswordReset')
+                ? $notifiable->getEmailForPasswordReset()
+                : $notifiable->email;
+
+            return rtrim(config('app.frontend_url'), '/')
+                . '/reset-password?token=' . $token
+                . '&email=' . urlencode($email);
+        });
     }
 
     /**
