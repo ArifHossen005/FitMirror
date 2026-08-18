@@ -1,9 +1,11 @@
 <?php
 
 use App\Http\Controllers\Mission\ImpersonationController;
+use App\Http\Controllers\Mission\ManualPaymentController;
 use App\Http\Controllers\Mission\MissionAuthController;
 use App\Http\Controllers\Mission\MissionHealthController;
 use App\Http\Controllers\Mission\MissionProfileController;
+use App\Http\Controllers\Mission\RefundController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -37,4 +39,12 @@ Route::middleware(['auth:super_admin', 'super_admin'])->group(function () {
     Route::post('/impersonate/{user}', [ImpersonationController::class, 'store'])
         ->whereNumber('user')
         ->name('mission.impersonate.start');
+
+    Route::post('/tenants/{tenant}/payments', [ManualPaymentController::class, 'store'])
+        ->whereNumber('tenant')
+        ->name('mission.tenants.payments.store');
+
+    Route::post('/payments/{payment}/refund', [RefundController::class, 'store'])
+        ->whereNumber('payment')
+        ->name('mission.payments.refund');
 });

@@ -14,12 +14,28 @@ interface GatedNavItem extends AppShellNavItem {
 const NAV_ITEMS: GatedNavItem[] = [
   { label: 'Dashboard', to: '/', end: true },
   { label: 'Team', to: '/staff', permission: 'staff.view' },
+  { label: 'Billing', to: '/billing', permission: 'billing.view' },
   { label: 'Activity Log', to: '/audit-log', permission: 'audit_log.view' },
   { label: 'Settings', to: '/settings' },
 ];
 
-/** Paths reachable even while a required-action redirect would otherwise fire — see below. */
-const ACTION_EXEMPT_PATHS = ['/settings/two-factor', '/settings/sessions', '/verify-email'];
+/**
+ * Paths reachable even while a required-action redirect would otherwise
+ * fire — see below. /billing/checkout and /billing/payment are here for
+ * the same reason /settings/two-factor is: a tenant is genuinely
+ * `pending` for its *entire* first checkout (see TenantStatus::Pending's
+ * own docblock — "Pending Approval" describes the state both before and
+ * immediately after a successful first payment), so bouncing to
+ * /pending-approval before the payment flow ever completes would make it
+ * impossible to pay in the first place.
+ */
+const ACTION_EXEMPT_PATHS = [
+  '/settings/two-factor',
+  '/settings/sessions',
+  '/verify-email',
+  '/billing/checkout',
+  '/billing/payment',
+];
 
 /**
  * Every route except the standalone auth pages (login, register, etc.)

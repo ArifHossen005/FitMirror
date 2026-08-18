@@ -6,7 +6,8 @@ import { persist } from 'zustand/middleware';
  * Deliberately its own store, not @fitmirror/api's generic useAuthStore —
  * that store's AuthUser is a minimal placeholder from Phase 1.B, predating
  * RBAC. This one carries the full GET /api/v1/auth/me shape (Phase 2.C:
- * roles, permissions) that every dashboard page built from here on needs.
+ * roles, permissions; Phase 3.D: plan/limits/features) that every
+ * dashboard page built from here on needs.
  */
 export interface DashboardUser {
   id: number;
@@ -28,9 +29,23 @@ export interface DashboardTenant {
   status: string;
 }
 
+export interface DashboardPlan {
+  id: number;
+  name: string;
+  slug: string;
+}
+
+export interface PlanFeature {
+  enabled: boolean;
+  tier: string | null;
+}
+
 interface DashboardAuthState {
   user: DashboardUser | null;
   tenant: DashboardTenant | null;
+  plan: DashboardPlan | null;
+  limits: Record<string, number | null>;
+  features: Record<string, PlanFeature>;
   roles: string[];
   permissions: string[];
   isAuthenticated: boolean;
@@ -45,11 +60,22 @@ interface DashboardAuthState {
   setSession: (data: {
     user: DashboardUser;
     tenant: DashboardTenant | null;
+    plan: DashboardPlan | null;
+    limits: Record<string, number | null>;
+    features: Record<string, PlanFeature>;
     roles: string[];
     permissions: string[];
     token: string;
   }) => void;
-  setMe: (data: { user: DashboardUser; tenant: DashboardTenant | null; roles: string[]; permissions: string[] }) => void;
+  setMe: (data: {
+    user: DashboardUser;
+    tenant: DashboardTenant | null;
+    plan: DashboardPlan | null;
+    limits: Record<string, number | null>;
+    features: Record<string, PlanFeature>;
+    roles: string[];
+    permissions: string[];
+  }) => void;
   startImpersonation: (superAdminName: string) => void;
   logout: () => void;
 }
@@ -59,26 +85,37 @@ export const useDashboardAuthStore = create<DashboardAuthState>()(
     (set) => ({
       user: null,
       tenant: null,
+      plan: null,
+      limits: {},
+      features: {},
       roles: [],
       permissions: [],
       isAuthenticated: false,
       impersonation: null,
 
-      setSession: ({ user, tenant, roles, permissions, token }) => {
+      setSession: ({ user, tenant, plan, limits, features, roles, permissions, token }) => {
         tokenStorage.set(token);
         if (tenant) {
           useTenantStore.getState().setTenant({
             id: tenant.id,
             slug: tenant.slug,
             name: tenant.name,
-            planSlug: 'free',
+            planSlug: (plan?.slug as 'free' | 'pro' | 'max' | undefined) ?? 'free',
           });
         }
-        set({ user, tenant, roles, permissions, isAuthenticated: true });
+        set({ user, tenant, plan, limits, features, roles, permissions, isAuthenticated: true });
       },
 
-      setMe: ({ user, tenant, roles, permissions }) => {
-        set({ user, tenant, roles, permissions, isAuthenticated: true });
+      setMe: ({ user, tenant, plan, limits, features, roles, permissions }) => {
+        if (tenant) {
+          useTenantStore.getState().setTenant({
+            id: tenant.id,
+            slug: tenant.slug,
+            name: tenant.name,
+            planSlug: (plan?.slug as 'free' | 'pro' | 'max' | undefined) ?? 'free',
+          });
+        }
+        set({ user, tenant, plan, limits, features, roles, permissions, isAuthenticated: true });
       },
 
       startImpersonation: (superAdminName) => {
@@ -88,7 +125,17 @@ export const useDashboardAuthStore = create<DashboardAuthState>()(
       logout: () => {
         tokenStorage.clear();
         useTenantStore.getState().clearTenant();
-        set({ user: null, tenant: null, roles: [], permissions: [], isAuthenticated: false, impersonation: null });
+        set({
+          user: null,
+          tenant: null,
+          plan: null,
+          limits: {},
+          features: {},
+          roles: [],
+          permissions: [],
+          isAuthenticated: false,
+          impersonation: null,
+        });
       },
     }),
     {
@@ -96,6 +143,9 @@ export const useDashboardAuthStore = create<DashboardAuthState>()(
       partialize: (state) => ({
         user: state.user,
         tenant: state.tenant,
+        plan: state.plan,
+        limits: state.limits,
+        features: state.features,
         roles: state.roles,
         permissions: state.permissions,
         isAuthenticated: state.isAuthenticated,

@@ -9,16 +9,16 @@
 
 ```
 Total Tasks: 829
-Completed:   182
-Remaining:   647
-Progress:    21.95%
+Completed:   226
+Remaining:   603
+Progress:    27.26%
 ```
 
-**Last updated:** 2026-08-17
-**Current phase:** Phase 3 — Subscription, Plans & Billing — 3.A complete; 3.B partially complete (trial start, cancel, state machine — the rest genuinely blocked on Phase 3.C's payment gateway, see 3.B's own notes)
-**Next task:** Phase 3.C → Payments (SSLCommerz) — `payments`/`invoices`/`invoice_items` tables, `config/sslcommerz.php`, `SslCommerzService` (session initiate + `validationserverAPI` order validation), payment initiate API, success/fail/cancel callback endpoints, IPN webhook with idempotent processing, tenant → `pending_approval` on verified payment, offline/manual payment recording for Mission Control, refund service. This is also what unblocks the rest of 3.B (subscribe/upgrade/downgrade/auto-renewal/dunning) and 3.D (coupons/add-ons/invoicing), all of which were left deliberately SKIPPED in 3.B for exactly this reason.
+**Last updated:** 2026-08-18
+**Current phase:** Phase 3 — Subscription, Plans & Billing — 3.A, 3.C, 3.D, and 3.E all complete (3.C mocked-only, see blocker below). 3.B remains the phase's only partially-complete section: trial start, cancel, and the state machine are done; subscribe-with-coupon, upgrade/downgrade-with-proration, auto-renewal, and dunning remain SKIPPED — the coupon/payment half of that blocker is now resolved (3.D), but upgrade/downgrade proration specifically still needs a real subscription period end date that only the still-unbuilt renewal job would ever set (see 3.E's own note on why that item was left SKIPPED rather than faked).
+**Next task:** Phase 4 — Store, Branch & Staff Management. 4.A (Backend): `stores`/`store_hours`/`kiosk_devices`/`shifts`/`franchise_groups` tables, store CRUD with plan branch-limit enforcement, kiosk pairing/claim/heartbeat, staff shift scheduling and performance aggregation, inter-branch stock lookup, custom subdomain/domain assignment. 4.B (Frontend): store list/create/edit/branding pages, kiosk pairing UI, shift scheduler, staff performance report, custom domain settings. Phase 3's remaining SKIPPED items (Phase 3.B's upgrade/downgrade proration, the 3.C auto-refund trigger) both wait on later phases (a renewal job; Phase 13's Mission Control tenant management) and don't block Phase 4 starting.
 
-**Blocker to resolve first:** `SSLC_STORE_ID`/`SSLC_STORE_PASSWORD` in `backend/.env` are empty — SSLCommerz sandbox credentials (free to register at [sslcommerz.com](https://sslcommerz.com)) are needed before `SslCommerzService`'s real API calls (session initiate, order validation) can be tested against anything but mocks. PHPUnit tests should mock the SSLCommerz client regardless (per the Phase 3.C checklist's own last item), but a live sandbox account is still needed to verify the integration actually works end-to-end before calling this phase done — ask the user for these credentials before assuming the phase is untestable and skipping straight to mocked-only coverage.
+**Blocker carried forward from 3.C (unresolved):** `SSLC_STORE_ID`/`SSLC_STORE_PASSWORD` in `backend/.env` are still empty — SSLCommerz sandbox credentials (free to register at [sslcommerz.com](https://sslcommerz.com)) are needed before `SslCommerzService`'s real API calls (session initiate, order validation, refund) can be verified against anything but `Http::fake()` mocks. The user was asked at the start of Phase 3.C and chose to proceed without credentials for now (2026-08-18) — all of 3.C/3.D was built and tested against mocks (64 tests across `tests/Feature/Payment/*` and `tests/Feature/Billing/*`), and the Phase 3.E frontend was additionally verified live in a real browser against the real backend, but live SSLCommerz sandbox verification is still an open item before Phase 3 can be called done fully end-to-end. The two refund endpoint paths (`SSLC_REFUND_INITIATE_ENDPOINT`/`SSLC_REFUND_QUERY_ENDPOINT`) are an additional, related gap — deliberately left unconfigured rather than hardcoded to a guessed URL; see Decision D-18.
 
 ---
 
@@ -45,6 +45,8 @@ Decisions that shape the build, recorded so they are not re-litigated later.
 | D-15 | 2026-08-17 | **Mission Control's Super Admin/Support/Finance roles stay on the `SuperAdminRole`/`SuperAdminPermission` enum pair built in Phase 1.C — spatie/laravel-permission is deliberately *not* wired into `App\Models\SuperAdmin`.** | Phase 2.C's checklist asked to "seed Mission Control roles" via spatie or document why that's redundant. `SuperAdminRole::permissions()` already is the seed — a fixed, three-value enum with a hardcoded permission map, working and tested since Phase 1.C (`EnsureSuperAdmin` + `SuperAdmin::hasPermission()`). Introducing a second, database-backed role system for a role set that will never grow past three values and is never tenant-invited or self-service-assignable would be two sources of truth for the same three facts. | Any future permission check for a super admin ability calls `$superAdmin->hasPermission(SuperAdminPermission::X)`, never `$superAdmin->can('x')`/spatie. If Mission Control ever needs *dynamic* roles (unlikely — it's an internal ops panel, not a customer-facing product), revisit this decision explicitly rather than silently mixing both systems. |
 | D-17 | 2026-08-17 | **Redis `SCAN` (`App\Support\UsageCounter::resetAll()`) requires two undocumented-by-default phpredis behaviours, both confirmed against the real dev Redis instance rather than assumed: the cursor variable must start as `null` (not `0`/`'0'`, either of which makes phpredis's `scan()` return `false` immediately even with matching keys present), and `SCAN`'s `match` pattern must include the connection's configured key prefix (`config('database.redis.options.prefix')`) since `SCAN` operates on the raw keyspace — while `DEL` re-adds that same prefix automatically, so a key returned by `scan()` must have the prefix stripped back off before being passed to `del()`, or the delete silently no-ops.** | Discovered writing `UsageCounterTest` — an initial implementation using Laravel's `Redis::connection()->scan($cursor, ['match' => ..., 'count' => ...])` wrapper returned zero keys every time despite `dbsize()` confirming they existed, traced step by step via `php artisan tinker` rather than guessed at. Additionally, PHPStan can't model phpredis's native by-reference cursor mutation across loop iterations (it statically treats the cursor as permanently `null`), which required isolating the by-ref call in its own method returning the new cursor as an explicit value. | Any future code that needs `SCAN` (not just usage counters) must follow the same pattern — see `UsageCounter::resetAll()`/`scanBatch()`'s own docblocks for the full account and the exact, verified-working sequence. |
 | D-16 | 2026-08-17 | **`ResolveTenant`'s authenticated-user fallback resolves the bearer token directly against `PersonalAccessToken::findToken()`, never `$request->user()` or `Auth::guard('sanctum')->user()`.** | Phase 2.C's staff/audit-log routes were the first to actually depend on this fallback (`EnsureTenantIsActive`/`EnsureTwoFactorIsEnabled`, unattached to any route until now) and its feature tests caught two more systemic bugs: (1) bare `$request->user()` resolves against `config('auth.defaults.guard')` ('web', session-based) since this middleware runs *before* any route's own `auth:sanctum` middleware — it silently never worked; (2) `Auth::guard('sanctum')->user()` "worked" in isolation but Laravel's `AuthManager` caches guard instances (and Sanctum's `RequestGuard` caches its resolved user on top of that) for the container's lifetime, which — in a test making sequential requests as two different principals (`ImpersonationTest`) — returned the *first* request's cached principal on the second call. | The same class of bug as D-13's two login-time scope failures, caught the same way: real feature tests against real routes, not inspection. A direct, stateless `PersonalAccessToken::findToken($bearerToken)` lookup has no guard-instance to cache and re-resolves fresh on every call — see `ResolveTenant::resolveFromAuthenticatedUser()`'s docblock for the full account, including why this is a testing-only failure mode (production is one-request-per-process, per D-01, with no cross-request container reuse). |
+| D-18 | 2026-08-18 | **SSLCommerz's refund API endpoints (`SSLC_REFUND_INITIATE_ENDPOINT`/`SSLC_REFUND_QUERY_ENDPOINT`) are deliberately left unconfigured in `config/sslcommerz.php` rather than hardcoded to a guessed URL, unlike the session-initiate (`gwprocess/v4/api.php`) and order-validation (`validationserverAPI.php`) endpoints, which are hardcoded per sandbox/live.** | Those two endpoints are SSLCommerz's well-known, extensively documented REST paths, safe to hardcode with confidence. The refund endpoint's exact path could not be independently verified without a working sandbox account (see this phase's own blocker note) — shipping a guessed URL dressed up as a verified constant would risk a silent, hard-to-diagnose failure in production refund flows, worse than an explicit configuration error. | `App\Services\Billing\SslCommerzService::initiateRefund()` throws a clear `PaymentGatewayException` naming the missing env var if called before these are set. Confirm the correct path against the SSLCommerz merchant panel's own API reference once sandbox credentials exist, then set both via env — no code change needed at that point. |
+| D-19 | 2026-08-18 | **Two Phase 3.D modelling choices made to keep scope bounded, both explained in full at their code site rather than re-litigated here: (1) coupons have no persisted "cart" — `POST /billing/coupon/preview` is stateless, a redemption is only ever written when a real Invoice is created, so "remove coupon" needed no API of its own; (2) every add-on (SMS, storage, support, template) is modelled as a uniform consumable balance pack (`addons.unit_amount` required, never null) drawn down FIFO by `AddonConsumptionService`, rather than giving non-quantifiable add-ons like "priority support" a special nullable/boolean shape.** | Both are documented in depth on `CouponService` and `TenantAddon`/`addons` migration's own docblocks. Recorded here only so a future session doesn't rediscover the same trade-off from scratch: a real per-user coupon-cart concept and a mixed balance/flag add-on model were both considered and rejected as unnecessary complexity for what Phase 3.D actually needed. | If a future phase needs a persisted multi-item cart (e.g. bundling a plan + multiple add-ons in one checkout) or a genuinely non-quantifiable add-on (e.g. a one-time white-label unlock with no "amount"), that is the point to revisit these, not before. |
 
 ### Rules arising from D-01
 
@@ -324,58 +326,62 @@ Verified: full workspace build/lint/test clean across all 4 apps (`npm run build
 
 ## 3.C Payments — SSLCommerz (Backend)
 
-- [ ] Create `payments` table (tenant_id, invoice_id, gateway, gateway_txn_id, val_id, amount, currency, method, status, raw_payload JSON)
-- [ ] Create `invoices` table (tenant_id, number, subtotal, discount, vat, total, currency, status, issued_at, due_at, paid_at, pdf_path)
-- [ ] Create `invoice_items` table (invoice_id, description, qty, unit_price, total)
-- [ ] Build sequential, tenant-safe invoice number generator
-- [ ] Create `config/sslcommerz.php` with store id, store password, sandbox flag, and callback URLs
-- [ ] Build `SslCommerzService` — session initiate request with full payload
-- [ ] Build SSLCommerz order validation (`validationserverAPI`) call and response verification
-- [ ] Build payment initiate API returning the gateway redirect URL
-- [ ] Build success callback endpoint with signature/hash verification
-- [ ] Build fail callback endpoint updating payment and invoice state
-- [ ] Build cancel callback endpoint
-- [ ] Build IPN webhook endpoint with idempotent processing
-- [ ] Persist every gateway payload for reconciliation and disputes
-- [ ] Move the tenant to `pending_approval` after a verified successful payment
-- [ ] Build offline/manual payment recording API for Mission Control
-- [ ] Build refund initiation service with gateway refund call and local ledger entry
-- [ ] Build auto-refund trigger when Mission Control rejects a tenant
-- [ ] Write payment tests using a mocked SSLCommerz client for success, fail, and IPN replay
+- [x] Create `payments` table (tenant_id, invoice_id, gateway, gateway_txn_id, val_id, amount, currency, method, status, raw_payload JSON)
+- [x] Create `invoices` table (tenant_id, number, subtotal, discount, vat, total, currency, status, issued_at, due_at, paid_at, pdf_path) — plus a nullable `subscription_id` FK, added because the payment flow needs a way to know which subscription a paid invoice activates; Phase 3.D's add-on invoices will leave it null
+- [x] Create `invoice_items` table (invoice_id, description, qty, unit_price, total)
+- [x] Build sequential, tenant-safe invoice number generator — `App\Services\Billing\InvoiceNumberGenerator`, `INV-{year}-{6 digits}` off one global sequence table (`invoice_number_sequences`) incremented under `lockForUpdate()`; see its own docblock for why "tenant-safe" was read as concurrency-safe-across-tenants rather than per-tenant numbering
+- [x] Create `config/sslcommerz.php` with store id, store password, sandbox flag, and callback URLs
+- [x] Build `SslCommerzService` — session initiate request with full payload
+- [x] Build SSLCommerz order validation (`validationserverAPI`) call and response verification
+- [x] Build payment initiate API returning the gateway redirect URL — `POST /api/v1/payment/initiate`
+- [x] Build success callback endpoint with signature/hash verification — SSLCommerz's classic REST integration verifies server-to-server via `validationserverAPI` (status + amount match) rather than a client-side HMAC signature; see `SslCommerzService::validateTransaction()`'s docblock
+- [x] Build fail callback endpoint updating payment and invoice state
+- [x] Build cancel callback endpoint
+- [x] Build IPN webhook endpoint with idempotent processing
+- [x] Persist every gateway payload for reconciliation and disputes — `Payment::appendRawPayload()`, keyed by round trip (`initiate_request`/`initiate_response`/`success_callback`/`validation`/`fail_callback`/`cancel_callback`)
+- [x] Move the tenant to `pending_approval` after a verified successful payment — no new tenant state needed: `TenantStatus::Pending`'s own label is already "Pending Approval" (set at registration); a verified payment instead transitions the *Subscription* `PendingPayment → PendingApproval` (Phase 3.B's existing state machine), documented in `PaymentService`'s class docblock
+- [x] Build offline/manual payment recording API for Mission Control — `POST /api/v1/mission/tenants/{tenant}/payments`, Finance/Super Admin only
+- [x] Build refund initiation service with gateway refund call and local ledger entry — `App\Services\Billing\RefundService`, a `refunds` table ledger row is created even when the gateway call fails; exposed via `POST /api/v1/mission/payments/{payment}/refund`
+- [ ] SKIPPED — Build auto-refund trigger when Mission Control rejects a tenant — blocked: no tenant-reject action exists yet (that's Phase 13's Mission Control tenant management, not built). `RefundService::refund()` is the primitive that trigger will call once it exists — same "build the primitive ahead of its caller" pattern as `SubscriptionService::cancel()`/`startTrial()` in Phase 3.B
+- [x] Write payment tests using a mocked SSLCommerz client for success, fail, and IPN replay — `tests/Feature/Payment/*` (29 tests, all via `Http::fake()`, no real SSLCommerz sandbox credentials — see this phase's own blocker note above)
 
 ## 3.D Coupons, Add-ons & Invoicing (Backend)
 
-- [ ] Create `coupons` table (code, type, value, applies_to_plans, max_redemptions, per_tenant_limit, starts_at, expires_at, status)
-- [ ] Create `coupon_redemptions` table (coupon_id, tenant_id, invoice_id, amount_discounted)
-- [ ] Build coupon validation and discount calculation service
-- [ ] Build coupon apply/remove API for checkout
-- [ ] Create `addons` table (SMS pack, storage pack, priority support, template pack) with pricing
-- [ ] Create `tenant_addons` table tracking purchased add-ons and remaining balances
-- [ ] Build add-on purchase flow reusing the SSLCommerz payment pipeline
-- [ ] Build add-on consumption service (decrement SMS/storage balances)
-- [ ] Build VAT/tax configuration and per-invoice tax computation
-- [ ] Build branded PDF invoice template with tenant and platform details
-- [ ] Build invoice PDF generation job and S3 storage
-- [ ] Build invoice email delivery with PDF attachment
-- [ ] Build invoice listing and download APIs for tenants
-- [ ] Build billing history API with payments, refunds, and credits
-- [ ] Write tests for coupon edge cases, VAT rounding, and invoice numbering
+- [x] Create `coupons` table (code, type, value, applies_to_plans, max_redemptions, per_tenant_limit, starts_at, expires_at, status)
+- [x] Create `coupon_redemptions` table (coupon_id, tenant_id, invoice_id, amount_discounted)
+- [x] Build coupon validation and discount calculation service — `App\Services\Billing\CouponService`
+- [x] Build coupon apply/remove API for checkout — `POST /billing/coupon/preview`; no persisted cart/coupon state exists anywhere in this app, so "apply" is the checkout page re-calling preview with a code and "remove" is simply not sending one on the next call — see `CouponService`'s own docblock for why this is a deliberate design choice, not a shortcut
+- [x] Create `addons` table (SMS pack, storage pack, priority support, template pack) with pricing — seeded by `AddonSeeder`
+- [x] Create `tenant_addons` table tracking purchased add-ons and remaining balances
+- [x] Build add-on purchase flow reusing the SSLCommerz payment pipeline — `App\Services\Billing\AddonPurchaseService`, built on the same `GatewayCheckoutService` `PaymentService` uses (extracted from Phase 3.C's `PaymentService::initiate()` specifically so this phase could reuse it instead of duplicating the SSLCommerz round trip)
+- [x] Build add-on consumption service (decrement SMS/storage balances) — `App\Services\Billing\AddonConsumptionService`, FIFO across `TenantAddon` rows by purchase date; no real caller yet (SMS sending is Phase 11, storage tracking is Phase 5) — tested directly, same "primitive ahead of its caller" pattern as `SubscriptionService`'s Phase 3.B methods
+- [x] Build VAT/tax configuration and per-invoice tax computation — `config/tax.php` (`VAT_RATE`, default 15%), `App\Support\TaxCalculator`; applied to both plan-purchase and add-on invoices, **not** applied to Mission Control's manual/offline payments (a negotiated amount Finance types in is taken as the final total as-is — see `PaymentService::recordOffline()`'s own docblock for why)
+- [x] Build branded PDF invoice template with tenant and platform details — `resources/views/pdf/invoice.blade.php`, rendered via `barryvdh/laravel-dompdf`
+- [x] Build invoice PDF generation job and S3 storage — `App\Jobs\GenerateInvoicePdfJob`, saves to the `tenant` disk (S3/R2 in production, local in dev) via `App\Services\Billing\InvoicePdfService`; dispatched automatically whenever any invoice (plan or add-on) is marked Paid
+- [x] Build invoice email delivery with PDF attachment — `App\Jobs\SendInvoiceEmailJob` (chained after PDF generation) + `App\Mail\InvoiceMail`
+- [x] Build invoice listing and download APIs for tenants — `GET /billing/invoices`, `GET /billing/invoices/{invoice}/download`
+- [x] Build billing history API with payments, refunds, and credits — `GET /billing/history`; "credits" don't exist as a concept anywhere in this codebase (no credit-ledger table was ever specified or built), so the feed merges payments + refunds only
+- [x] Write tests for coupon edge cases, VAT rounding, and invoice numbering — `tests/Feature/Billing/*` (8 files, 35 tests) + `tests/Feature/Plan/PlanListTest.php`/`CurrentSubscriptionTest.php` (4 tests); all passing alongside the full 193-test backend suite
+
+Also built, beyond the checklist's own line items, because Phase 3.E's frontend genuinely needed them: `GET /plans` (public plan catalog — no such endpoint existed for a pricing page to read from) and `GET /subscription` (the tenant's current subscription — nothing exposed this either, only cancel/auto-renew wrote to it).
 
 ## 3.E Frontend — Billing
 
-- [ ] Build public pricing page with the Free/Pro/Max comparison table from the product doc
-- [ ] Build plan selection and billing-cycle toggle (monthly / yearly with 20% discount)
-- [ ] Build checkout page with coupon field and order summary
-- [ ] Build SSLCommerz redirect handoff and return handling
-- [ ] Build payment success, failure, and cancelled result pages
-- [ ] Build "awaiting owner approval" status page with support contact
-- [ ] Build billing dashboard (current plan, usage meters, renewal date)
-- [ ] Build upgrade/downgrade flow with proration preview
-- [ ] Build invoice list with PDF download
-- [ ] Build add-on marketplace page (SMS, storage, support, templates)
-- [ ] Build payment method / auto-renew toggle UI
-- [ ] Build plan-limit-reached modal with upgrade CTA
-- [ ] Build feature-locked overlay component for gated features
+- [x] Build public pricing page with the Free/Pro/Max comparison table from the product doc — `PricingPage.tsx`, reads live from `GET /plans` rather than hardcoding the table (see `PlanListController`'s own docblock)
+- [x] Build plan selection and billing-cycle toggle (monthly / yearly with 20% discount) — folded into `PricingPage.tsx`
+- [x] Build checkout page with coupon field and order summary — `CheckoutPage.tsx`
+- [x] Build SSLCommerz redirect handoff and return handling — `window.location.href = result.gateway_url` in both `CheckoutPage.tsx` and `AddonsPage.tsx`
+- [x] Build payment success, failure, and cancelled result pages — `PaymentResultPage.tsx`, one page keyed by the `:status` route param, matching the backend callback controllers' own `resultUrl()` redirect targets exactly
+- [x] Build "awaiting owner approval" status page with support contact — **already existed**, built in Phase 2.D (`PendingApprovalPage.tsx`); re-verified it's still reachable mid-checkout by adding `/billing/checkout` and `/billing/payment` to `ProtectedLayout`'s action-exempt paths, since a tenant is `pending` for its entire first payment, not just before it
+- [x] Build billing dashboard (current plan, usage meters, renewal date) — `BillingDashboardPage.tsx`; "renewal date" is honestly `trial_ends_at` only — `subscriptions.ends_at` is never populated by anything yet (see the SKIPPED item just below), so there is no real renewal date to show yet
+- [ ] SKIPPED — Build upgrade/downgrade flow with proration preview — **still blocked**, and documented as such in `PaymentService`'s own class docblock: proration needs a real subscription period end date (`subscriptions.ends_at`), which nothing populates because the renewal job that would set it doesn't exist (Phase 3.B's own still-SKIPPED item). Building a "preview" against an end date that's always null would be fabricating a number, not a feature — this is the one item from today's batch left honestly undone rather than faked
+- [x] Build invoice list with PDF download — `InvoicesPage.tsx`
+- [x] Build add-on marketplace page (SMS, storage, support, templates) — `AddonsPage.tsx`
+- [x] Build payment method / auto-renew toggle UI — auto-renew toggle built and working (`PATCH /subscription/auto-renew`, a new endpoint — Phase 3.B never built one, only `cancel()` flipped the flag as a side effect); "payment method" has no toggle because SSLCommerz's hosted checkout page is where a customer picks card/bKash/Nagad on every payment — this integration never stores a preferred method, so there's honestly nothing to persist for that half
+- [x] Build plan-limit-reached modal with upgrade CTA — `components/billing/PlanLimitModal.tsx` + `parsePlanLimitError()` helper, parses `App\Support\PlanGateResponse::limitExceeded()`'s exact error shape so any future mutation across the app (not just billing) can show it
+- [x] Build feature-locked overlay component for gated features — `components/billing/FeatureLockedOverlay.tsx`, reads `features` off `GET /auth/me` (a Phase 3.D addition to `MeController` — it previously returned `limits` but not `features`)
+
+Verified live, not just build/lint/test: `php artisan serve` + `npm run dev --workspace=apps/dashboard` against the real backend — unauthenticated `/pricing` renders real Free/Pro/Max data with a working monthly/yearly toggle; an authenticated owner's `/billing` renders real plan/usage/trial data, the auto-renew toggle round-trips through the real API and survives a reload, `/billing/invoices` and `/billing/addons` (seeded) render correctly, and `/billing/checkout` computes a real order summary — zero console/network errors across all of it. Full workspace build/lint/test also clean across all 4 apps.
 
 ---
 

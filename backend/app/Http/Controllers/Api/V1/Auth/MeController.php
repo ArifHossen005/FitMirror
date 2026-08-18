@@ -9,13 +9,17 @@ use Illuminate\Http\Request;
 
 /**
  * GET /api/v1/auth/me — the authenticated user, their tenant, plan,
- * limits, roles, and permissions. `plan`/`limits` reflect the tenant's
- * resolved plan (Phase 3.A — PlanService::resolve() falls back to Free for
- * a tenant that hasn't been through checkout yet, so this is never null in
- * practice). `roles`/`permissions` reflect spatie/laravel-permission
- * (Phase 2.C) — empty for a user with no role assigned yet (should not
- * normally happen post-2.C: registration assigns 'owner', invitation
- * acceptance assigns the invited role).
+ * limits, features, roles, and permissions. `plan`/`limits`/`features`
+ * reflect the tenant's resolved plan (Phase 3.A — PlanService::resolve()
+ * falls back to Free for a tenant that hasn't been through checkout yet,
+ * so this is never null in practice). `features` is keyed by feature_key
+ * (Phase 3.D addition, e.g. `{"campaign_manager": {"enabled": true, "tier":
+ * "basic"}}`) — the same data App\Services\Plan\FeatureGate checks
+ * server-side, exposed here so the dashboard can render a feature-locked
+ * overlay without a dedicated endpoint. `roles`/`permissions` reflect
+ * spatie/laravel-permission (Phase 2.C) — empty for a user with no role
+ * assigned yet (should not normally happen post-2.C: registration assigns
+ * 'owner', invitation acceptance assigns the invited role).
  */
 class MeController extends BaseApiController
 {
@@ -51,6 +55,11 @@ class MeController extends BaseApiController
                 'slug' => $plan->slug,
             ] : null,
             'limits' => $plan ? $plan->limits->mapWithKeys(fn ($limit) => [$limit->key => $limit->value])->all() : [],
+            'features' => $plan
+                ? $plan->features->mapWithKeys(fn ($feature) => [
+                    $feature->feature_key => ['enabled' => $feature->enabled, 'tier' => $feature->tier()],
+                ])->all()
+                : [],
             'roles' => $user->getRoleNames(),
             'permissions' => $user->getAllPermissions()->pluck('name'),
         ]);

@@ -70,7 +70,14 @@ return [
         | consistent no matter which underlying disk is active.
         */
         'tenant' => [
-            'driver' => env('TENANT_DISK_DRIVER', env('FILESYSTEM_DISK') === 's3' ? 's3' : 'local'),
+            // env()'s $default only applies when the key is *absent* —
+            // .env ships TENANT_DISK_DRIVER as a present-but-empty string
+            // (intentionally, per its own comment: "left blank, it follows
+            // FILESYSTEM_DISK"), which env() would otherwise pass through
+            // as '' and make FilesystemManager reject the disk entirely
+            // ("does not have a configured driver"). ?: treats both null
+            // and '' as "not set", which is what was actually intended.
+            'driver' => env('TENANT_DISK_DRIVER') ?: (env('FILESYSTEM_DISK') === 's3' ? 's3' : 'local'),
             'key' => env('AWS_ACCESS_KEY_ID'),
             'secret' => env('AWS_SECRET_ACCESS_KEY'),
             'region' => env('AWS_DEFAULT_REGION'),

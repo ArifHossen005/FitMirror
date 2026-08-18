@@ -13,13 +13,25 @@ use App\Http\Controllers\Api\V1\Auth\RegisterController;
 use App\Http\Controllers\Api\V1\Auth\ResetPasswordController;
 use App\Http\Controllers\Api\V1\Auth\TwoFactorChallengeController;
 use App\Http\Controllers\Api\V1\Auth\TwoFactorController;
+use App\Http\Controllers\Api\V1\Billing\AddonController;
+use App\Http\Controllers\Api\V1\Billing\BillingHistoryController;
+use App\Http\Controllers\Api\V1\Billing\CouponPreviewController;
+use App\Http\Controllers\Api\V1\Billing\InvoiceController;
 use App\Http\Controllers\Api\V1\HealthController;
+use App\Http\Controllers\Api\V1\Payment\PaymentCancelCallbackController;
+use App\Http\Controllers\Api\V1\Payment\PaymentFailCallbackController;
+use App\Http\Controllers\Api\V1\Payment\PaymentInitiateController;
+use App\Http\Controllers\Api\V1\Payment\PaymentIpnController;
+use App\Http\Controllers\Api\V1\Payment\PaymentSuccessCallbackController;
+use App\Http\Controllers\Api\V1\Plan\PlanListController;
 use App\Http\Controllers\Api\V1\Plan\PlanUsageController;
 use App\Http\Controllers\Api\V1\Staff\AuditLogController;
 use App\Http\Controllers\Api\V1\Staff\InviteAcceptController;
 use App\Http\Controllers\Api\V1\Staff\StaffController;
 use App\Http\Controllers\Api\V1\Staff\StaffInvitationController;
+use App\Http\Controllers\Api\V1\Subscription\AutoRenewController;
 use App\Http\Controllers\Api\V1\Subscription\CancelSubscriptionController;
+use App\Http\Controllers\Api\V1\Subscription\CurrentSubscriptionController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -37,6 +49,29 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/health', HealthController::class)
     ->name('api.v1.health');
+
+Route::get('/plans', PlanListController::class)->name('plans.index');
+
+/*
+|--------------------------------------------------------------------------
+| SSLCommerz Callbacks & IPN (Phase 3.C)
+|--------------------------------------------------------------------------
+|
+| Unauthenticated by design — SSLCommerz's servers/browser redirects carry
+| no FitMirror session, only the posted tran_id/val_id fields. Each
+| controller resolves its own Payment row via Payment::withoutTenantScope()
+| rather than relying on ResolveTenant (which still runs as part of the
+| global 'api' middleware group here, but finds no subdomain/header/user to
+| resolve a tenant from on these routes and simply no-ops, per its own
+| docblock).
+|
+*/
+Route::prefix('payment')->group(function () {
+    Route::post('/callback/success', PaymentSuccessCallbackController::class)->name('payment.callback.success');
+    Route::post('/callback/fail', PaymentFailCallbackController::class)->name('payment.callback.fail');
+    Route::post('/callback/cancel', PaymentCancelCallbackController::class)->name('payment.callback.cancel');
+    Route::post('/ipn', PaymentIpnController::class)->name('payment.ipn');
+});
 
 Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
     return $request->user();
@@ -126,5 +161,37 @@ Route::middleware(['auth:sanctum', 'tenant.active', 'tenant.2fa'])->group(functi
 
     Route::get('/plan/usage', PlanUsageController::class)->name('plan.usage');
 
+    Route::get('/subscription', CurrentSubscriptionController::class)->name('subscription.show');
     Route::post('/subscription/cancel', CancelSubscriptionController::class)->name('subscription.cancel');
+    Route::patch('/subscription/auto-renew', AutoRenewController::class)->name('subscription.auto-renew');
+
+    Route::prefix('billing')->group(function () {
+        Route::get('/invoices', [InvoiceController::class, 'index'])->name('billing.invoices.index');
+        Route::get('/invoices/{invoice}/download', [InvoiceController::class, 'download'])
+            ->name('billing.invoices.download');
+        Route::get('/history', BillingHistoryController::class)->name('billing.history');
+        Route::get('/addons', [AddonController::class, 'index'])->name('billing.addons.index');
+        Route::post('/addons/{addon}/purchase', [AddonController::class, 'purchase'])
+            ->name('billing.addons.purchase');
+    });
+});
+
+/*
+|--------------------------------------------------------------------------
+| Payment Initiate (Phase 3.C)
+|--------------------------------------------------------------------------
+|
+| Deliberately its own group, not folded into the 'tenant.active' group
+| above — a tenant paying for the first time is, by definition, not yet
+| active (see PaymentInitiateController's own docblock). Still behind
+| 'tenant.2fa': the owner must already have finished 2FA setup to reach
+| this route, same as every other business route.
+|
+*/
+Route::middleware(['auth:sanctum', 'tenant.2fa'])->group(function () {
+    Route::post('/payment/initiate', PaymentInitiateController::class)->name('payment.initiate');
+    // Reachable pre-approval for the same reason as /payment/initiate above
+    // — a coupon is applied *during* the first checkout, before the tenant
+    // is active.
+    Route::post('/billing/coupon/preview', CouponPreviewController::class)->name('billing.coupon.preview');
 });

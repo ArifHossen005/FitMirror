@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use App\Exceptions\InsufficientAddonBalanceException;
+use App\Exceptions\PaymentGatewayException;
 use App\Exceptions\PlanLimitExceededException;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
@@ -26,6 +28,17 @@ class ApiExceptionRenderer
     {
         return match (true) {
             $e instanceof PlanLimitExceededException => PlanGateResponse::limitExceeded($e->limitKey, $e->current, $e->max),
+            $e instanceof PaymentGatewayException => ApiResponse::error(
+                $e->getMessage(),
+                Response::HTTP_BAD_GATEWAY,
+                errorCode: 'payment_gateway_error',
+            ),
+            $e instanceof InsufficientAddonBalanceException => ApiResponse::error(
+                $e->getMessage(),
+                Response::HTTP_PAYMENT_REQUIRED,
+                errors: ['addon' => $e->addonCode, 'requested' => $e->requested, 'available' => $e->available],
+                errorCode: 'insufficient_addon_balance',
+            ),
             $e instanceof ValidationException => self::validation($e),
             $e instanceof AuthenticationException => ApiResponse::error(
                 trans('common.unauthenticated'),

@@ -8,6 +8,12 @@ import { PendingApprovalPage } from '../pages/auth/PendingApprovalPage';
 import { RegisterPage } from '../pages/auth/RegisterPage';
 import { ResetPasswordPage } from '../pages/auth/ResetPasswordPage';
 import { TwoFactorChallengePage } from '../pages/auth/TwoFactorChallengePage';
+import { AddonsPage } from '../pages/billing/AddonsPage';
+import { BillingDashboardPage } from '../pages/billing/BillingDashboardPage';
+import { CheckoutPage } from '../pages/billing/CheckoutPage';
+import { InvoicesPage } from '../pages/billing/InvoicesPage';
+import { PaymentResultPage } from '../pages/billing/PaymentResultPage';
+import { PricingPage } from '../pages/billing/PricingPage';
 import { DashboardHome } from '../pages/DashboardHome';
 import { NotFound } from '../pages/NotFound';
 import { ProfileSettingsPage } from '../pages/settings/ProfileSettingsPage';
@@ -32,6 +38,7 @@ export function AppRoutes() {
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/invite/accept" element={<InviteAcceptPage />} />
+      <Route path="/pricing" element={<PricingPage />} />
       {/*
         Reachable unauthenticated: RegisterPage navigates here right after
         registration, before any token exists (RegisterController issues
@@ -49,6 +56,11 @@ export function AppRoutes() {
         <Route path="/settings" element={<ProfileSettingsPage />} />
         <Route path="/settings/two-factor" element={<TwoFactorSetupPage />} />
         <Route path="/settings/sessions" element={<SessionsPage />} />
+        <Route path="/billing" element={<BillingDashboardPage />} />
+        <Route path="/billing/checkout" element={<CheckoutPage />} />
+        <Route path="/billing/payment/:status" element={<PaymentResultPage />} />
+        <Route path="/billing/invoices" element={<InvoicesPage />} />
+        <Route path="/billing/addons" element={<AddonsPage />} />
       </Route>
 
       <Route path="*" element={<NotFound />} />

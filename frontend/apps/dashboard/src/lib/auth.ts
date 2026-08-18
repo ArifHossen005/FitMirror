@@ -3,6 +3,7 @@ import { isAxiosError } from 'axios';
 import {
   type DashboardTenant,
   type DashboardUser,
+  type PlanFeature,
   useDashboardAuthStore,
 } from '../stores/dashboardAuthStore';
 import { apiClient } from './apiClient';
@@ -103,6 +104,9 @@ async function hydrateSessionFromToken(token: string): Promise<void> {
   useDashboardAuthStore.getState().setSession({
     user: mapUser(me.user),
     tenant: me.tenant ? mapTenant(me.tenant) : null,
+    plan: me.plan,
+    limits: me.limits,
+    features: me.features,
     roles: me.roles,
     permissions: me.permissions,
     token,
@@ -124,6 +128,9 @@ interface MeResponse {
     last_login_at: string | null;
   };
   tenant: { id: number; name: string; slug: string; status: string } | null;
+  plan: { id: number; name: string; slug: string } | null;
+  limits: Record<string, number | null>;
+  features: Record<string, PlanFeature>;
   roles: string[];
   permissions: string[];
 }
@@ -152,6 +159,9 @@ export async function fetchMe(): Promise<void> {
   useDashboardAuthStore.getState().setMe({
     user: mapUser(me.user),
     tenant: me.tenant ? mapTenant(me.tenant) : null,
+    plan: me.plan,
+    limits: me.limits,
+    features: me.features,
     roles: me.roles,
     permissions: me.permissions,
   });

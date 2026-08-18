@@ -4,35 +4,68 @@ FitMirror SaaS project — continuing an existing build.
 PROJECT: d:\New folder\my-up-yosuite\FitMirror
 
 STEP 1 — Read these first, don't skip:
-  - PROGRESS.md   (829-task checklist, Decision Log D-01–D-13 at top)
+  - PROGRESS.md   (829-task checklist, Decision Log D-01–D-19 at top)
   - DOCUMENTATION.md (living technical docs, 14 sections)
 
-Current state: 132/829 tasks done (15.9%). Phase 1 (Foundation) is 100%
-complete and verified — backend foundation, frontend foundation (all 4
-apps + packages/ui + packages/api + packages/i18n), and Mission Control
-foundation (super_admins, guard, login, health check) all done and tested.
-Phase 2.A (Multi-Tenancy Core) and Phase 2.B (Authentication) are also
-complete and verified: tenants table, BelongsToTenant/TenantScope/
-TenantContext, ResolveTenant/EnsureTenantIsActive middleware, full users
-auth surface (register/login/logout/me/2FA/password reset/sessions/
-profile). 65 backend feature tests pass, Larastan + Pint clean, frontend
-builds/lints/tests clean across all 4 apps plus a live Playwright run.
+Current state: 226/829 tasks done (27.26%). Phase 1 (Foundation), Phase 2
+(Multi-Tenancy, Auth & RBAC), and Phase 3 (Subscription, Plans & Billing)
+are effectively complete:
+  - 3.A Plans & Limits: complete.
+  - 3.B Subscription Lifecycle: trial start, cancel, and the state
+    machine are built; subscribe-with-coupon and upgrade/downgrade-with-
+    proration remain SKIPPED — proration genuinely needs a real
+    subscription period end date (subscriptions.ends_at) that nothing
+    populates until a renewal job exists. Not faked; left honestly undone.
+  - 3.C Payments (SSLCommerz): complete — full payment initiate/callback/
+    IPN flow, Mission Control manual payments and refunds. Tested against
+    Http::fake() only (no live sandbox credentials yet).
+  - 3.D Coupons, Add-ons & Invoicing: complete — coupons, add-ons, VAT,
+    branded PDF invoices, invoice email delivery, invoice/history APIs.
+  - 3.E Frontend Billing: complete except the one item that mirrors 3.B's
+    own gap (upgrade/downgrade proration UI) — pricing page, checkout,
+    payment result pages, billing dashboard, invoices, add-on
+    marketplace, plan-limit modal, feature-locked overlay. Verified live
+    in a real browser against the real backend, not just build/lint/test.
+
+193 backend feature tests pass (PHPUnit), Larastan + Pint clean. Frontend
+builds/lints/tests clean across all 4 apps.
 
 Read the Decision Log before touching anything — especially D-09 (no
 Repository pattern), D-11 (every packages/* workspace needs its own
-tsconfig.json or Vitest's JSX transform breaks), D-12 (phpstan.neon needs
-parseModelCastsMethod: true for Laravel 12's method-based casts()), and
-D-13 (TenantScope fails closed — no tenant context means zero rows, not
-every tenant's rows; three deliberate, audited bypasses make
-authentication itself possible — read this one carefully before writing
-any new code that queries User or another BelongsToTenant model outside
-an authenticated request's already-resolved tenant context).
+tsconfig.json), D-13 (TenantScope fails closed — read this one carefully
+before writing any new code that queries User or another BelongsToTenant
+model outside an authenticated request's already-resolved tenant
+context), and the two newest ones from today's session:
+  - D-18: SSLCommerz's refund endpoint paths are deliberately left
+    unconfigured (not hardcoded to a guessed URL) — confirm them against
+    the merchant panel once sandbox credentials exist, don't invent a path.
+  - D-19: coupons have no persisted cart (stateless preview, write-on-
+    redeem only) and every add-on is a uniform consumable balance pack —
+    both deliberate scope choices, not gaps, explained in depth on
+    CouponService's and the tenant_addons migration's own docblocks.
+
+Also worth knowing before you start: this session caught and fixed two
+more real, systemic bugs the same way Decision D-13's original two were
+found — by actually running the code, not by inspection:
+  1. `TENANT_DISK_DRIVER=` ships as a present-but-empty string in .env,
+     not absent — env()'s default only applies when a key is *missing*,
+     not blank. The `tenant` disk (S3/R2 in prod, local in dev) silently
+     had no driver since Phase 1.A/2.A; nothing had ever actually written
+     to it in a test until this session's PDF generation did. Fixed in
+     config/filesystems.php with `env(...) ?: (...)`.
+  2. A queued job (SendInvoiceEmailJob) eager-loading `$invoice->tenant->
+     owner` resolved to null on every real queue worker, because User
+     carries TenantScope and a queued job has no ambient TenantContext —
+     the exact class of bug D-13 describes, this time in a job. Any new
+     job or Mailable that reaches through a Tenant to a User (or another
+     BelongsToTenant model) must use `User::withoutTenantScope()->find(...)`
+     explicitly, never the bare relation.
 
 STEP 2 — Verify before trusting: PROGRESS.md checkboxes were reconciled
-against the actual disk state as of 2026-08-14, but always spot-check with
-real commands (composer.lock, npm ls, php artisan route:list, grep) before
-assuming something marked [x] still holds — don't take a checkbox as proof
-by itself.
+against the actual disk state as of 2026-08-18, but always spot-check
+with real commands (composer.lock, npm ls, php artisan route:list, grep)
+before assuming something marked [x] still holds — don't take a checkbox
+as proof by itself.
 
 HOW I WANT YOU TO WORK (same as before):
   - Batches of 15-20 tasks. Do NOT stop and ask "continue?" after each
@@ -43,58 +76,87 @@ HOW I WANT YOU TO WORK (same as before):
   - NEVER leave // TODO, stub functions, or placeholder logic. Every
     function fully implemented with validation and error handling.
   - After writing code, actually run it — migrate, test, lint, build —
-    don't just write files and assume they work. Phase 2.B alone caught
-    two real, systemic bugs this way (see Decision D-13) that inspection
-    alone would have missed entirely.
+    don't just write files and assume they work. For frontend work,
+    actually start the dev server and drive it in a real browser
+    (Playwright or equivalent) before calling a UI task done — this
+    session's own billing UI work caught a real auto-renew-toggle timing
+    question and confirmed genuinely-live plan/usage data this way, and
+    Phase 2.D/2.B both caught systemic backend bugs the same way
+    (running the code) that inspection alone would have missed.
   - When a task genuinely depends on a table/model from a LATER phase
-    that doesn't exist yet (e.g. Phase 2.A's tenant provisioning service
-    needs Phase 2.C's roles and Phase 4.A's stores), don't fake it or
-    build a partial/broken version — leave it unchecked with a clear
-    one-line reason in PROGRESS.md and move on. This has already happened
-    twice (tenant provisioning/teardown in 2.A, customer OTP auth in 2.B)
+    that doesn't exist yet, don't fake it or build a partial/broken
+    version — leave it unchecked with a clear one-line reason in
+    PROGRESS.md and move on. This has happened several times already
+    (tenant provisioning/teardown in 2.A, customer OTP auth in 2.B,
+    custom-role creation in 2.C, upgrade/downgrade proration in 3.B/3.E)
     and is the right call, not a shortcut.
   - If a package/library resolves to a newer major version than the spec
     says, don't fight it if the newer version is the only installable/
-    current option — record a Decision (D-14, D-15, ...) explaining why,
+    current option — record a Decision (D-20, D-21, ...) explaining why,
     then proceed.
+  - If you're genuinely unsure about an external fact (an exact API
+    endpoint path, a third-party format) and can't verify it, don't
+    present a guess as fact — leave it explicitly unconfigured with a
+    clear error message and a decision log entry, the way D-18 handled
+    SSLCommerz's refund endpoints. A wrong guess presented confidently is
+    worse than an honest gap.
   - Tell me clearly if you hit a real blocker or must deviate from spec.
 
-STEP 3 — Next task: Phase 2.C — RBAC & Audit (Backend). Per PROGRESS.md,
-the remaining Phase 2.C items are:
-  - Define the full permission matrix (module × action) as a config file
-  - Seed roles: Owner, Manager, Staff, and their default permissions
-    (spatie/laravel-permission — already installed since Phase 1.A)
-  - Seed Mission Control roles: Super Admin, Support Agent, Finance
-    (note: SuperAdminRole enum + permissions already exist from Phase
-    1.C — this task is about wiring spatie/laravel-permission itself in,
-    or deciding it's redundant with the existing enum and documenting
-    that decision)
-  - Build role assignment API for staff users
-  - Build custom-role creation API for Max-plan tenants
-  - Create Laravel Policies for Tenant, Store, User, Product, Campaign,
-    Loyalty, Customer, Report (most of these models don't exist yet —
-    only build policies for models that are real today: Tenant, User;
-    leave the rest unchecked with a reason, same pattern as before)
-  - Register policies and enforce authorize() in every controller action
-  - Build staff invite API — email invitation with signed acceptance link
-  - Build invite acceptance API creating the staff user with the
-    assigned role
-  - Build staff CRUD API (list, show, update role, deactivate, delete)
-  - Enforce plan staff-account limits on invite/create (plans don't exist
-    until Phase 3.A — this will hit the same "future dependency" pattern;
-    document and defer if so)
-  - Configure activity logging on all tenant-facing models
-    (spatie/laravel-activitylog — already installed since Phase 1.A)
-  - Build audit log API with filters (user, module, action, date range)
-  - Build super-admin impersonation token issuance with audit entry and
-    expiry
-  - Build impersonation exit endpoint restoring the original session
-  - Write RBAC tests asserting each role's allowed and denied actions
+STEP 3 — Next task: Phase 4 — Store, Branch & Staff Management.
 
-Then Phase 2.D — Frontend: Auth & Team (registration/login/2FA pages,
-protected-route wrapper, usePermissions hook, staff management page,
-activity audit log page, impersonation banner) — this is the natural
-partner to 2.C since it needs real roles/permissions to render against.
+## 4.A Backend
+  - `stores` table (tenant_id, name, code, is_main, phone, email, address,
+    city, area, lat, lng, map_url, logo, banner, socials JSON, status) +
+    `Store` model with tenant scope
+  - Store CRUD APIs with plan branch-limit enforcement (PlanService::
+    assertWithinLimit() already exists from Phase 3.A — reuse it, same
+    pattern as StaffInvitationService's staff_accounts check)
+  - Store profile update API (logo, banner, contact, social links, map link)
+  - `store_hours` table + kiosk active-hours configuration + enforcement
+    in the kiosk session guard
+  - `kiosk_devices` table (store_id, name, pairing_code, device_fingerprint,
+    status, last_seen_at, settings JSON)
+  - Kiosk pairing API (short-lived code) → claim API (exchange for a
+    long-lived device token) → heartbeat API (last_seen_at + health)
+  - Kiosk device CRUD + remote unpair API
+  - Kiosk display settings API (language, theme, idle timeout,
+    screensaver playlist)
+  - `shifts` table + staff shift assignment APIs + schedule listing by
+    store/date range
+  - Staff performance aggregation (try-ons handled, sessions,
+    conversions) — try-on session data doesn't exist until Phase 6, so
+    this will likely need real placeholder-free numbers only for what's
+    real today (staff count, maybe nothing meaningful yet) — use the
+    same "defer with a reason" pattern if the underlying data genuinely
+    isn't there yet, don't fabricate metrics
+  - Inter-branch stock availability API for a given product/variant —
+    genuinely blocked on Phase 5's Product/ProductVariant tables not
+    existing yet; expect to SKIP this one with that reason, same pattern
+    as tenant provisioning was in 2.A
+  - `franchise_groups` table + franchise consolidated view API
+    (Enterprise/Max only — FeatureGate/plan.feature middleware already
+    exist from Phase 3.A, reuse them)
+  - Custom subdomain assignment/validation API (`{slug}.fitmirror.com`)
+    and custom domain request + DNS TXT verification API for Max plan
+  - Tests for branch limits, kiosk pairing, and inter-branch stock
+    lookups (the last one only if not SKIPPED above)
+
+## 4.B Frontend (natural partner to 4.A, same as 2.D/3.E were to their
+backend halves — build once 4.A's real endpoints exist, not against
+placeholders)
+  - Store list page (status, quick stats), create/edit form (profile,
+    contact, address, map picker), branding page (logo/banner upload
+    with crop)
+  - Store hours editor (per-day open/close + kiosk-active windows)
+  - Kiosk devices page (list, pair new device, status, last seen) +
+    pairing modal (code + live claim status) + display settings form
+  - Staff shift scheduler (weekly grid, drag assignment) + staff
+    performance report page
+  - Inter-branch stock check widget on the product page — skip if the
+    backend API itself was skipped above
+  - Custom domain settings page with DNS verification instructions
+  - Kiosk app pairing screen (in apps/kiosk, not apps/dashboard —
+    consumes the pairing code from the kiosk device's own screen)
 
 Start now: read the files, verify current state, then continue with the
 next batch of 15-20 tasks.

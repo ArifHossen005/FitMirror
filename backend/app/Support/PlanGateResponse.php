@@ -42,8 +42,13 @@ class PlanGateResponse
         );
     }
 
+    /**
+     * Pointed at /settings/billing until Phase 3.E built a real billing
+     * page — now that App\Http\Controllers\Api\V1\Billing\* and the
+     * dashboard's /billing route both exist, this points at the real one.
+     */
     private static function upgradeUrl(): string
     {
-        return rtrim(config('app.frontend_url'), '/') . '/settings/billing';
+        return rtrim(config('app.frontend_url'), '/') . '/billing';
     }
 }

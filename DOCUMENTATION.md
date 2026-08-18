@@ -1046,10 +1046,13 @@ _Every variable is added to this table as it is introduced. Values shown are exa
 | `SSLC_STORE_ID` | SSLCommerz store ID | `fitmir65abc...` | Yes |
 | `SSLC_STORE_PASSWORD` | SSLCommerz store password | `fitmir65abc@ssl` | Yes |
 | `SSLC_SANDBOX` | Use sandbox gateway | `true` | Yes |
-| `SSLC_SUCCESS_URL` | Success callback | `${APP_URL}/payment/success` | Yes |
-| `SSLC_FAIL_URL` | Failure callback | `${APP_URL}/payment/fail` | Yes |
-| `SSLC_CANCEL_URL` | Cancel callback | `${APP_URL}/payment/cancel` | Yes |
-| `SSLC_IPN_URL` | IPN webhook | `${APP_URL}/webhooks/sslcommerz` | Yes |
+| `SSLC_SUCCESS_URL` | Success callback — see §7.5 `/payment/callback/success` | `${APP_URL}/api/v1/payment/callback/success` | Yes |
+| `SSLC_FAIL_URL` | Failure callback | `${APP_URL}/api/v1/payment/callback/fail` | Yes |
+| `SSLC_CANCEL_URL` | Cancel callback | `${APP_URL}/api/v1/payment/callback/cancel` | Yes |
+| `SSLC_IPN_URL` | IPN webhook | `${APP_URL}/api/v1/payment/ipn` | Yes |
+| `SSLC_REFUND_INITIATE_ENDPOINT` | SSLCommerz refund-initiate URL — deliberately blank by default, not hardcoded (Decision D-18) | (blank until confirmed) | No — refunds fail fast with a clear error until set |
+| `SSLC_REFUND_QUERY_ENDPOINT` | SSLCommerz refund-status-query URL — same reasoning as above | (blank until confirmed) | No |
+| `VAT_RATE` | VAT applied to the post-discount subtotal of every plan/add-on invoice (Phase 3.D) | `0.15` | Yes |
 | `SMS_DRIVER` | SMS gateway driver | `bulksmsbd` | Yes |
 | `SMS_API_KEY` | Gateway API key | `...` | Yes |
 | `SMS_SENDER_ID` | Approved sender ID | `FitMirror` | Yes |
@@ -1110,7 +1113,7 @@ Relationships: …
 | Group | Tables |
 |---|---|
 | Tenancy & Auth | `tenants`, `users`, `super_admins`, `roles`, `permissions`, `model_has_roles`, `login_attempts`, `personal_access_tokens`, `activity_log` |
-| Plans & Billing | `plans`, `plan_limits`, `plan_features`, `feature_flags`, `subscriptions`, `invoices`, `invoice_items`, `payments`, `coupons`, `coupon_redemptions`, `addons`, `tenant_addons` |
+| Plans & Billing | `plans`, `plan_limits`, `plan_features`, `feature_flags`, `subscriptions`, `invoices`, `invoice_items`, `invoice_number_sequences`, `payments`, `refunds`, `coupons`, `coupon_redemptions`, `addons`, `tenant_addons` |
 | Stores & Staff | `stores`, `store_hours`, `kiosk_devices`, `shifts`, `franchise_groups` |
 | Catalog | `categories`, `attributes`, `attribute_values`, `occasions`, `tags`, `taggables`, `products`, `product_variants`, `product_images`, `product_attribute`, `product_occasion`, `size_charts`, `price_history`, `stock_movements`, `catalog_links` |
 | Try-On | `tryon_sessions`, `tryon_events`, `garment_assets`, `size_estimations`, `fit_feedback` |
@@ -1448,8 +1451,8 @@ Response item: `{ "id", "module", "action", "description", "causer": { "id", "na
 ## 7.4 Tenant & Profile Endpoints
 _Reserved for tenant-settings endpoints (branding, business hours, etc.) — not yet built. User profile self-service lives under `/auth/profile` (§7.3) since it's part of the auth surface, not tenant administration._
 
-## 7.5 Subscription & Billing Endpoints (Phase 3.A/3.B)
-Mounted under `/api/v1` alongside the other tenant business routes (`auth:sanctum` + `tenant.active` + `tenant.2fa`). Checkout/subscribe, upgrade/downgrade, and payment endpoints are still empty — blocked on Phase 3.C's SSLCommerz integration (see PROGRESS.md Phase 3.B's own notes on what's deferred and why).
+## 7.5 Subscription & Billing Endpoints (Phase 3.A/3.B/3.C)
+Mounted under `/api/v1` alongside the other tenant business routes. Most of this section requires `auth:sanctum` + `tenant.active` + `tenant.2fa`, but the payment endpoints deliberately don't all share that exact group — see each one's own auth line below. Checkout-with-coupon, upgrade/downgrade, and invoice listing/download are still empty — blocked on Phase 3.D (see PROGRESS.md Phase 3.B/3.D's own notes on what's deferred and why).
 
 ### `GET /plan/usage`
 Current usage vs. the tenant's resolved plan limits (`App\Services\Plan\PlanService::resolve()` — falls back to the Free plan for a tenant with no `plan_id` chosen yet). One row per `plan_limits` key; `current` is `null`, not `0`, for a metric this phase has no live counter for (`categories`/`skus`/`branches`/`storage_gb` — those land with Phase 4/5).
@@ -1471,6 +1474,20 @@ Response `200`:
 }
 ```
 
+### `GET /plans`
+Public, unauthenticated — the pricing page's data source (Phase 3.E). `Plan::publicPlans()` (`is_public` + `Active`, ordered by `sort_order`) with `limits`/`features` eager-loaded.
+
+**Auth:** none.
+
+Response `200`: `{ "data": [ { "id", "name", "slug", "price_monthly", "price_yearly", "currency", "trial_days", "limits": {...}, "features": {...} } ] }`
+
+### `GET /subscription`
+The caller's current trialing/active/past_due/grace subscription (`SubscriptionService::currentFor()` — the same lookup `/subscription/cancel` and `/subscription/auto-renew` already used internally). `data: null` for a tenant with none yet — a real, expected state, not an error.
+
+**Auth:** `sanctum` + `tenant.active` + `tenant.2fa`.
+
+Response `200`: `{ "data": { "id", "plan_id", "billing_cycle", "status", "auto_renew", "starts_at", "trial_ends_at", "ends_at", "cancelled_at" } | null }`
+
 ### `POST /subscription/cancel`
 Owner-only (`isTenantOwner()`, not a spatie permission — mirrors why `tenant_settings.update` is owner-exclusive in `config/permissions.php`). `immediately: true` transitions the current subscription to `cancelled` right away; `immediately: false` only sets `auto_renew: false` and records `reason` — the actual end-of-period transition to `cancelled` is Phase 3.B's still-unbuilt auto-renewal job's responsibility (it would see `auto_renew = false` at the subscription's renewal date and simply not renew).
 
@@ -1479,6 +1496,70 @@ Owner-only (`isTenantOwner()`, not a spatie permission — mirrors why `tenant_s
 Request: `{ "immediately": true, "reason": "Too expensive" }` (`reason` optional).
 Response `200`: `{ "data": { "id", "status", "auto_renew", "cancelled_at" } }`
 Response `404` (`no_active_subscription`) if the tenant has no trialing/active/past_due/grace subscription. Response `403` if the caller isn't the literal tenant owner.
+
+### `PATCH /subscription/auto-renew` (Phase 3.D)
+Owner-only. Toggles `auto_renew` independently of cancellation — e.g. turning it back on after a scheduled (non-immediate) cancel flipped it off — without a full resume/reactivate flow (still SKIPPED, see PROGRESS.md Phase 3.B).
+
+**Auth:** `sanctum` + `tenant.active` + `tenant.2fa`.
+
+Request: `{ "auto_renew": true }`
+Response `200`: `{ "data": { "id", "auto_renew" } }`
+Response `404` (`no_active_subscription`) if the tenant has no current subscription.
+
+### `POST /payment/initiate`
+Owner-only. Starts (or resumes, if a prior attempt already created one) a `PendingPayment` `Subscription` + a `Pending` `Invoice` for the given plan/cycle — with an optional coupon applied and VAT computed (Phase 3.D) — then calls SSLCommerz's session-initiate API and returns the gateway redirect URL. Deliberately **not** behind `tenant.active` — a tenant paying for the first time is, by definition, not yet active (`TenantStatus::Pending`'s own label is "Pending Approval"); gating payment behind an active tenant would make it impossible to ever pay. Still behind `tenant.2fa`, since the owner must already have finished 2FA setup to reach any business route.
+
+**Auth:** `sanctum` + `tenant.2fa` (no `tenant.active`).
+
+Request: `{ "plan_id": 2, "billing_cycle": "monthly", "coupon_code": "SAVE20" }` (`coupon_code` optional).
+Response `200`: `{ "data": { "invoice_number", "subtotal", "discount", "vat", "amount", "currency", "gateway_url" } }` — redirect the browser to `gateway_url` to complete payment.
+Response `422` if the plan isn't purchasable, the coupon is invalid/expired/exhausted (see `POST /billing/coupon/preview` below for the exact validation rules), or the tenant already has a trialing/active/awaiting-approval subscription (upgrade/downgrade isn't built yet — see Phase 3.B). Response `502` (`payment_gateway_error`) if SSLCommerz credentials are unconfigured or the session-initiate call itself fails.
+
+### `POST /payment/callback/success` / `/fail` / `/cancel`
+SSLCommerz posts here directly (an auto-submitting form on the customer's browser, not a FitMirror-authenticated request) after a completed checkout session. Each looks up its `Payment` by the posted `tran_id` — unauthenticated by design, and deliberately not behind `tenant.active`/`tenant.2fa` either, for the same reason as `/payment/initiate` above.
+
+The success callback re-verifies via SSLCommerz's `validationserverAPI` order-validation call (status must be `VALID`/`VALIDATED` *and* the validated amount must match the payment — this is SSLCommerz's server-to-server stand-in for a client-side signature check, since the classic REST integration has no HMAC payload signing). A verified success marks the `Invoice` `Paid` and transitions the `Subscription` `PendingPayment → PendingApproval`. Fail/cancel just record the outcome — never touch the subscription.
+
+All three always redirect (`302`) the browser to `config('app.frontend_url')/billing/payment/{success|failed|cancelled}?invoice={number}` — the dashboard's `PaymentResultPage.tsx` (Phase 3.E) renders that exact route.
+
+**Auth:** none.
+
+### `POST /payment/ipn`
+SSLCommerz's server-to-server Instant Payment Notification — fires independently of whether the customer's browser ever reaches the success callback (closed tab, dropped connection mid-redirect). Always responds `200` so SSLCommerz doesn't endlessly retry delivery. Idempotent: replaying the same `tran_id` (a payment already marked `Success`) short-circuits without re-validating or re-transitioning anything, and without calling SSLCommerz's validation API a second time.
+
+**Auth:** none.
+
+### `POST /billing/coupon/preview` (Phase 3.D)
+Validates a coupon code against a plan/cycle and returns the computed discount, without writing anything — the checkout page's "apply coupon" action. No "remove" endpoint exists: nothing is persisted until the coupon is actually redeemed against a real invoice (`POST /payment/initiate`'s own `coupon_code` field), so removing it client-side needs no API call. Reachable in the same pre-approval window as `/payment/initiate` (no `tenant.active`), since coupons are applied *during* the first checkout.
+
+**Auth:** `sanctum` + `tenant.2fa` (no `tenant.active`).
+
+Request: `{ "code": "SAVE20", "plan_id": 2, "billing_cycle": "monthly" }`
+Response `200`: `{ "data": { "code", "subtotal", "discount", "total_before_vat" } }`
+Response `422` (`coupon` field error) if the code doesn't exist, isn't active, is outside its start/expiry window, doesn't apply to the chosen plan, or has hit its global (`max_redemptions`) or per-tenant (`per_tenant_limit`) redemption cap.
+
+### `GET /billing/invoices` / `GET /billing/invoices/{invoice}/download` (Phase 3.D)
+Every plan and add-on invoice for the caller's tenant, newest first. `{invoice}` uses normal tenant-scoped route-model binding — a cross-tenant id 404s. `downloadable` in the list response is `false` until `GenerateInvoicePdfJob` finishes (near-instant in practice, since it's dispatched the moment an invoice is marked Paid); the download route itself 404s with `invoice_pdf_not_ready` if hit before that.
+
+**Auth:** `sanctum` + `tenant.active` + `tenant.2fa` + `billing.view` permission.
+
+`GET /billing/invoices` response `200`: `{ "data": [ { "id", "number", "type": "plan"|"addon", "subtotal", "discount", "vat", "total", "currency", "status", "issued_at", "paid_at", "downloadable" } ], "meta": {...} }`
+`GET /billing/invoices/{invoice}/download` response `200`: the PDF file (`Content-Disposition: attachment`).
+
+### `GET /billing/history` (Phase 3.D)
+Payments and refunds for the caller's tenant, merged into one chronological feed (newest first). No "credits" row type exists — there is no credit-ledger concept anywhere in this codebase.
+
+**Auth:** `sanctum` + `tenant.active` + `tenant.2fa` + `billing.view` permission.
+
+Response `200`: `{ "data": [ { "type": "payment"|"refund", "id", "gateway", "amount", "currency", "status", "created_at" } ], "meta": {...} }`
+
+### `GET /billing/addons` / `POST /billing/addons/{addon}/purchase` (Phase 3.D)
+The add-on marketplace catalog, and purchasing one — reuses the exact SSLCommerz pipeline `/payment/initiate` uses (`App\Services\Billing\AddonPurchaseService`, built on the same `GatewayCheckoutService`). A verified add-on payment credits a new `TenantAddon` row (`unit_amount × quantity`), drawn down later by `AddonConsumptionService`.
+
+**Auth:** `sanctum` + `tenant.active` + `tenant.2fa` (list); purchase additionally requires the caller be the tenant owner.
+
+`GET /billing/addons` response `200`: `{ "data": [ { "id", "code", "name", "description", "type", "price", "currency", "unit_amount" } ] }`
+`POST /billing/addons/{addon}/purchase` request: `{ "quantity": 2 }` (optional, defaults to 1). Response `200`: `{ "data": { "invoice_number", "amount", "currency", "gateway_url" } }`.
 
 ### Plan-gated and limit-gated errors (used across every module, not just this section)
 Any plan-feature-gated route (`->middleware('plan.feature:{key}')`) returns `403` with `error_code: "plan_feature_unavailable"` and `errors: { feature, upgrade_url }`. Any limit check (`PlanService::assertWithinLimit()`, e.g. staff invites — §7.3a) throws `App\Exceptions\PlanLimitExceededException`, rendered the same way with `error_code: "plan_limit_exceeded"` and `errors: { limit, current, max, upgrade_url }` — one shared shape (`App\Support\PlanGateResponse`) so the dashboard can build a single "upgrade your plan" prompt component regardless of which check failed.
@@ -1594,6 +1675,25 @@ Response `200`: `{ "data": { "token": "...", "expires_at": "...", "user": { "id"
 
 The dashboard SPA (Phase 2.D's `ImpersonationBanner`) is opened in a **new browser tab** at `{FRONTEND_URL}/?impersonation_token=...&impersonated_by=...` — the super admin's own Mission Control session is never touched, so "exit impersonation" (`POST /auth/impersonation/exit`, §7.3) only ever needs to revoke that one token and let the tab close.
 
+### `POST /api/v1/mission/tenants/{tenant}/payments` (Phase 3.C)
+Records a payment collected outside SSLCommerz (bank transfer, cash, a negotiated deal) — same `Invoice`/`Subscription` state machine as a real gateway payment (the `Invoice` is marked `Paid`, the `Subscription` transitions `PendingPayment → PendingApproval`), just with no gateway round trip. `{tenant}` is a plain integer id.
+
+**Auth:** `super_admin` (active account, `billing` permission — Finance or Super Admin roles only).
+
+Request: `{ "plan_id": 2, "billing_cycle": "monthly", "amount": null, "note": "Bank transfer confirmed by ops" }` (`amount` optional — defaults to the plan's own listed price for that cycle; set it only to record a negotiated/partial amount. `note` optional.)
+Response `201`: `{ "data": { "id", "invoice_number", "amount", "currency", "status" } }`
+
+### `POST /api/v1/mission/payments/{payment}/refund` (Phase 3.C)
+Issues a refund against a previously successful `Payment` — `App\Services\Billing\RefundService`. For an SSLCommerz payment this calls SSLCommerz's refund API using the `bank_tran_id` captured from that payment's stored order-validation payload; for a `manual` (offline-recorded) payment it completes without any gateway call. A `refunds` ledger row is always created, even when the gateway call itself throws (`status: "failed"`), so a refund attempt is never silently lost. `{payment}` is a plain integer id, resolved via `Payment::withoutTenantScope()`.
+
+**Auth:** `super_admin` (active account, `billing` permission — Finance or Super Admin roles only).
+
+Request: `{ "amount": null, "reason": "Tenant application rejected" }` (`amount` optional — defaults to the full original payment amount; `reason` optional.)
+Response `201`: `{ "data": { "id", "amount", "status", "gateway_refund_ref" } }`
+Response `502` (`payment_gateway_error`) if the payment is an SSLCommerz payment missing a `bank_tran_id`, or if `SSLC_REFUND_INITIATE_ENDPOINT` isn't configured (see Decision D-18 — this endpoint's exact path was never verified against a live SSLCommerz sandbox).
+
+This is the manual counterpart to the still-SKIPPED "auto-refund trigger when Mission Control rejects a tenant" (PROGRESS.md Phase 3.C) — until Phase 13 builds a tenant-reject action to fire it automatically, this is how Support/Finance issue a refund today.
+
 ## 7.16 Public REST API (Max Plan)
 _Empty — populated in Phase 12._
 
@@ -1695,7 +1795,25 @@ _To be filled in Phase 10._
 - `SubscriptionStatus` is a *separate* state machine from `TenantStatus` (App\Enums\TenantStatus's own docblock, written in Phase 2.A, anticipated this) — the billing relationship vs. whether the tenant can use the product at all. `Subscription::transitionTo()` enforces a fixed, deliberate transition graph and throws on any edge not in it.
 - Trial start (`SubscriptionService::startTrial()`) and cancellation (`SubscriptionService::cancel()`, `POST /subscription/cancel` — §7.5) are built; subscribe/upgrade/downgrade/auto-renewal/dunning are not — every one of those genuinely needs Phase 3.C's SSLCommerz integration to exist first (either to take a payment or to know what "prorated credit" even means without an invoicing ledger). See PROGRESS.md Phase 3.B for the full accounting of what's built vs. deliberately deferred.
 
-_SSLCommerz payment integration, invoicing, coupons, and the renewal/dunning jobs: to be filled in Phase 3.C–3.D._
+**SSLCommerz payment integration — built in Phase 3.C:**
+- `PaymentService::initiate()` creates (or resumes) a `PendingPayment` `Subscription` + `Pending` `Invoice`, then calls SSLCommerz's session-initiate API. The customer pays on SSLCommerz's own hosted page — this app never touches card/mobile-wallet details directly.
+- Verification is server-to-server, not a client-side signature: SSLCommerz's `validationserverAPI` order-validation call is the source of truth, checked for both `status` and a matching `amount` before anything is marked paid. Both the success callback (browser redirect) and the IPN webhook (async, gateway-initiated) converge on the same `PaymentService::verifyAndMarkSuccess()`, which is idempotent — a replayed `tran_id` is a no-op past the first successful verification.
+- A verified payment marks the `Invoice` `Paid` and moves the `Subscription` `PendingPayment → PendingApproval` — the exact transition Phase 3.B's state machine already had a slot for. No new `TenantStatus` was needed: `Pending`'s own label is already "Pending Approval" (§1.4's product flow), so the tenant side of the approval flow needed zero changes.
+- Mission Control's manual/offline payment recording (`POST /mission/tenants/{tenant}/payments`) and refund issuance (`POST /mission/payments/{payment}/refund`) reuse this exact same state machine — an offline payment activates a subscription the same way a verified SSLCommerz payment does, just without the gateway round trip.
+- Every gateway interaction (session-initiate request/response, order-validation response, each callback body) is kept on `payments.raw_payload`, keyed by round trip — `Payment::appendRawPayload()` — for reconciliation and disputes.
+- Not yet live-verified: no SSLCommerz sandbox account exists (see PROGRESS.md's blocker note), so every test runs against `Http::fake()`. The refund API's exact endpoint path is also unconfirmed (Decision D-18) — `RefundService` works, but throws a clear error until `SSLC_REFUND_INITIATE_ENDPOINT` is set.
+
+**Coupons, add-ons, VAT, and invoicing — built in Phase 3.D:**
+- `CouponService::preview()` is the one place a coupon code is validated (active, within its start/expiry window, applies to the chosen plan, under both its global and per-tenant redemption caps) and priced (`Coupon::discountFor()` — percentage or fixed, always capped at the subtotal so a discount can never exceed it). No cart is persisted anywhere: a redemption is only ever written (`CouponRedemption`) when a real `Invoice` is created, at `PaymentService::resolvePendingInvoice()` — see Decision D-19.
+- `App\Support\TaxCalculator::vatFor()` (`config('tax.vat_rate')`, default 15%) is applied to every plan-purchase and add-on invoice's post-discount subtotal. Mission Control's manual/offline payments are the one deliberate exception — the amount Finance types in is taken as the final total as-is, not run through VAT (`PaymentService::recordOffline()`'s own docblock).
+- `App\Services\Billing\AddonPurchaseService` reuses the exact same `GatewayCheckoutService` (extracted from `PaymentService::initiate()` specifically for this) that plan purchases use — an add-on `Invoice` sets `addon_id`, never `subscription_id`, the mutually-exclusive counterpart to a plan invoice. A verified payment credits a new `TenantAddon` row (`unit_amount × quantity`); `App\Services\Billing\AddonConsumptionService` draws it down FIFO by purchase date — no real caller yet (SMS sending is Phase 11, storage tracking is Phase 5), tested directly as a primitive ahead of its callers.
+- Every add-on (SMS pack, storage pack, priority support, template pack) is modelled uniformly as a consumable balance (`addons.unit_amount`, never null) rather than giving non-quantifiable ones like "priority support" a special boolean/flag shape — see Decision D-19.
+- `PaymentService::finalizeInvoice()` (renamed from the Phase 3.C `markInvoicePaidAndActivateSubscription()`) now branches on which of `subscription_id`/`addon_id` is set, and unconditionally dispatches `GenerateInvoicePdfJob` — every paid invoice, plan or add-on, gets a real branded PDF (`resources/views/pdf/invoice.blade.php`, rendered via `barryvdh/laravel-dompdf`, saved to the `tenant` disk) and an email with it attached (`SendInvoiceEmailJob` → `App\Mail\InvoiceMail`).
+- `GET /billing/invoices` (+ `/download`) and `GET /billing/history` (payments + refunds merged) give the tenant owner a real billing back-office; both require the `billing.view` permission that's existed in `config/permissions.php` since Phase 2.C but had nothing to gate until now.
+
+**Frontend — built in Phase 3.E:** `PricingPage` (public, reads `GET /plans` live rather than hardcoding the comparison table), `CheckoutPage` (coupon field + order summary, hands off to SSLCommerz via `window.location.href`), `PaymentResultPage` (one page keyed by the `:status` route param the backend's callback controllers redirect to), `BillingDashboardPage` (current plan, usage meters, auto-renew toggle, cancel), `InvoicesPage`, `AddonsPage` — all in `apps/dashboard/src/pages/billing/`. Plus two reusable components any future module can use: `PlanLimitModal` (parses `PlanGateResponse::limitExceeded()`'s exact error shape) and `FeatureLockedOverlay` (reads the `features` `GET /auth/me` now returns). Verified live against the real backend, not just build/lint/test — see PROGRESS.md Phase 3.E's own note.
+
+**Deliberately not built:** upgrade/downgrade with proration (still SKIPPED — needs a real subscription period end date nothing populates yet, see PROGRESS.md Phase 3.B/3.E) and auto-renewal/dunning jobs (same blocker as before, a renewal job that would actually charge a recurring payment).
 
 ## 8.9 Notification System
 
@@ -2114,6 +2232,59 @@ _Version history, updated at every release. Follows [Semantic Versioning](https:
 - **Laravel Sanctum was never actually installed** despite being reported as done in the prior session summary — `routes/api.php` already referenced `auth:sanctum` middleware, which would have failed at runtime. See Decision D-08.
 - Our customised `App\Providers\HorizonServiceProvider` (with the dashboard gate) was never registered in `bootstrap/providers.php` — only the base package provider was, via auto-discovery, so the gate had zero effect.
 - Unauthenticated API requests without an explicit `Accept: application/json` header (e.g. a bare `curl` call) 500'd with `RouteNotFoundException` trying to redirect to a non-existent `login` route, instead of returning a 401 JSON error. Fixed via `$middleware->redirectGuestsTo(fn () => null)` in `bootstrap/app.php` — this is an API-only application with no web login route to redirect to.
+
+---
+
+## Phase 3.D — Coupons, Add-ons & Invoicing / Phase 3.E — Frontend Billing — 2026-08-18
+
+### Added
+- `coupons`/`coupon_redemptions`/`addons`/`tenant_addons` tables + `Coupon`/`CouponRedemption`/`Addon`/`TenantAddon` models; `CouponType`/`CouponStatus`/`AddonType`/`AddonStatus` enums; `invoices.addon_id` (nullable, mutually exclusive with `subscription_id`)
+- `App\Services\Billing\{CouponService,GatewayCheckoutService,AddonPurchaseService,AddonConsumptionService,InvoicePdfService}`, `App\Support\TaxCalculator`, `config/tax.php` (`VAT_RATE`, default 15%)
+- `App\Jobs\{GenerateInvoicePdfJob,SendInvoiceEmailJob}`, `App\Mail\InvoiceMail`, `resources/views/pdf/invoice.blade.php`, `resources/views/mail/invoice-paid.blade.php` — every invoice that reaches Paid (plan or add-on, online or Mission Control manual) now gets a real branded PDF stored on the `tenant` disk and emailed to the owner
+- `POST /api/v1/billing/coupon/preview`, `GET /api/v1/billing/invoices` (+ `/download`), `GET /api/v1/billing/history`, `GET /api/v1/billing/addons` (+ `/purchase`), `GET /api/v1/subscription`, `PATCH /api/v1/subscription/auto-renew`, `GET /api/v1/plans` — see §7.5
+- `PaymentService::initiate()` refactored: the SSLCommerz round trip itself is now `GatewayCheckoutService` (shared with `AddonPurchaseService`), and `resolvePendingInvoice()` runs every plan-purchase invoice through the new coupon + VAT pricing pipeline
+- `AddonSeeder` — the four packs named in the checklist (SMS/storage/support/template), registered in `DatabaseSeeder`
+- `MeController` now returns `features` alongside the existing `plan`/`limits` (Phase 3.A) — the data source for `FeatureLockedOverlay`
+- Frontend: `PricingPage`, `CheckoutPage`, `PaymentResultPage`, `BillingDashboardPage`, `InvoicesPage`, `AddonsPage` (`apps/dashboard/src/pages/billing/`), `PlanLimitModal`/`FeatureLockedOverlay` (`components/billing/`), `lib/billing.ts` — see §7.5 for the endpoints these consume
+- `dashboardAuthStore` now carries `plan`/`limits`/`features` (previously only `tenant.planSlug`, hardcoded to `'free'` regardless of the tenant's actual plan — see Fixed below) and `useTenantStore`'s `planSlug` is now populated from the real resolved plan
+- 39 new backend feature tests (`tests/Feature/Billing/*`, 8 files) + `PlanListTest`/`CurrentSubscriptionTest` — 193 backend tests total, all passing
+- Decision D-19 recorded: coupons have no persisted cart (stateless preview + write-on-redeem only) and every add-on is modelled as a uniform consumable balance pack, not a mixed balance/flag shape
+
+### Fixed
+- `TENANT_DISK_DRIVER=` ships as a *present-but-empty* string in `.env`, not absent — `env('TENANT_DISK_DRIVER', $default)` only falls back to `$default` when the key is missing entirely, so the `tenant` disk's driver silently resolved to `''` and every write threw "Disk [tenant] does not have a configured driver." This has been latent since Phase 1.A/2.A; nothing ever actually wrote to the `tenant` disk in a feature test until `InvoicePdfService` did. Fixed in `config/filesystems.php` with `env('TENANT_DISK_DRIVER') ?: (...)`, which treats both `null` and `''` as "not set."
+- `App\Jobs\SendInvoiceEmailJob` eager-loading `$invoice->tenant->owner` resolved to `null` on every real queue worker — `User` carries `TenantScope`, and a queued job (Decision D-01: no cross-request/cross-job container reuse) has no ambient `TenantContext` for that relation query to run against. The exact class of bug Decision D-13 describes, this time in a job rather than a controller; fixed with an explicit `User::withoutTenantScope()->find($ownerId)` instead of the relation.
+- `dashboardAuthStore.setSession()`/`setMe()` hardcoded `useTenantStore`'s `planSlug: 'free'` unconditionally, regardless of the tenant's actual plan — dead code until this phase (nothing read `planSlug` yet), now wired to the real `plan.slug` from `GET /auth/me`.
+- `App\Support\PlanGateResponse::upgradeUrl()` pointed at `/settings/billing`, a placeholder written in Phase 3.A before any billing page existed — updated to the real `/billing` route now that one does.
+
+### Known limitations, recorded rather than hidden
+- Phase 3.B's upgrade/downgrade-with-proration API remains SKIPPED — the coupon/VAT half of what blocked it is resolved, but proration math needs a real subscription period end date (`subscriptions.ends_at`), which nothing populates until a renewal job exists. The Phase 3.E frontend task for this was left undone rather than built against fabricated data — see PROGRESS.md Phase 3.E's own note.
+- No SSLCommerz sandbox account exists yet (carried forward from Phase 3.C) — every gateway interaction, including the new add-on purchase flow, is tested against `Http::fake()`.
+- "Billing history" merges payments and refunds only — there is no credits/ledger concept anywhere in this codebase to include a third row type.
+- Manual/offline payments (Mission Control) don't run through the VAT/coupon pipeline — the amount Finance types in is taken as the final total as-is, a deliberate scope decision (see `PaymentService::recordOffline()`'s docblock), not an oversight.
+
+---
+
+## Phase 3.C — Payments (SSLCommerz) — 2026-08-18
+
+### Added
+- `invoices`/`invoice_items`/`payments`/`refunds`/`invoice_number_sequences` tables + `Invoice`/`InvoiceItem`/`Payment`/`Refund` models; `InvoiceStatus`/`PaymentStatus`/`PaymentGateway`/`RefundStatus` enums
+- `App\Services\Billing\{InvoiceNumberGenerator,SslCommerzService,PaymentService,RefundService}` and `config/sslcommerz.php`
+- `POST /api/v1/payment/initiate`, `POST /api/v1/payment/callback/{success,fail,cancel}`, `POST /api/v1/payment/ipn` — see §7.5
+- `POST /api/v1/mission/tenants/{tenant}/payments` (offline/manual recording) and `POST /api/v1/mission/payments/{payment}/refund` — Finance/Super Admin only, see §7.15
+- `App\Exceptions\PaymentGatewayException`, rendered by `ApiExceptionRenderer` as `502 payment_gateway_error`
+- A verified successful payment transitions the tenant's `Subscription` `PendingPayment → PendingApproval` (Phase 3.B's existing state machine) — no new tenant status was needed; see §1.4 and `PaymentService`'s class docblock for why `TenantStatus::Pending` already *is* the product document's "pending_approval" state
+- 29 new backend feature tests (`tests/Feature/Payment/*`, 6 files) — 154 total, all passing; every SSLCommerz call is `Http::fake()`d (no sandbox credentials — see PROGRESS.md's carried-forward blocker)
+- Decision D-18 recorded: SSLCommerz's refund endpoints are deliberately left unconfigured rather than hardcoded to an unverified guess, unlike the session-initiate/order-validation endpoints
+
+### Fixed
+- `$payment->invoice` (the plain `belongsTo` relation) silently returned `null` in every context this phase actually runs in — gateway callbacks, the IPN webhook, and Mission Control's manual-payment/refund actions all execute with no ambient `TenantContext`, so the lazy-loaded `Invoice` relation query inherited `TenantScope`'s fail-closed default independently of how the parent `Payment` was fetched (the same class of bug as Decision D-13's Sanctum `tokenable()` case). Fixed with a dedicated, explicitly-named `Payment::invoiceUnscoped()` accessor used at every Phase 3.C call site instead of the plain relation.
+- `PaymentService::initiate()`'s first draft wrapped the SSLCommerz session-initiate HTTP call inside the same DB transaction as the Subscription/Invoice/Payment row creation — a gateway failure rolled the whole attempt back, leaving zero rows behind to reconcile against and silently defeating the checklist's "persist every gateway payload for reconciliation and disputes" requirement. Restructured so the rows commit first and the gateway call (with its own Failed-state update on error) happens afterward, outside any transaction.
+
+### Known limitations, recorded rather than hidden
+- No SSLCommerz sandbox account exists yet — every gateway interaction is tested against `Http::fake()`, never a real response. Live end-to-end verification (and the two refund endpoint paths) remains open; see PROGRESS.md's blocker note.
+- Auto-refund trigger when Mission Control rejects a tenant: SKIPPED — no tenant-reject action exists yet (Phase 13). `RefundService::refund()` is the primitive that trigger will call once built.
+- Phase 3.B's subscribe-with-coupon and upgrade/downgrade-with-proration APIs remain SKIPPED — Phase 3.C unblocked the payment half, but coupons and a proration/credit ledger are still Phase 3.D's work.
+- Success/fail/cancel callbacks redirect to `config('app.frontend_url')/billing/payment/{status}` — Phase 3.E's actual result pages don't exist yet, the same "point at a frontend route ahead of the page being built" pattern already used for the password-reset email link and staff invitation emails.
 
 ---
 

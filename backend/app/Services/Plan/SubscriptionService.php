@@ -111,4 +111,19 @@ class SubscriptionService extends BaseService
 
         return $subscription;
     }
+
+    /**
+     * Toggles auto-renewal independently of cancellation — e.g. turning it
+     * back on after cancel($immediately: false) flipped it off, without
+     * requiring a full resume/reactivate flow (PROGRESS.md Phase 3.B's
+     * still-deferred "resume/reactivate API" is about restoring a
+     * Cancelled/Suspended/Expired subscription to Active; this only ever
+     * touches the boolean on a subscription that's already usable).
+     */
+    public function setAutoRenew(Subscription $subscription, bool $autoRenew): Subscription
+    {
+        $subscription->forceFill(['auto_renew' => $autoRenew])->save();
+
+        return $subscription;
+    }
 }

@@ -21,6 +21,7 @@ class DatabaseSeeder extends Seeder
             PlanSeeder::class,              // Phase 3.A — Free/Pro/Max plans
             SuperAdminSeeder::class,        // Phase 1.C — seeded from SUPER_ADMIN_EMAIL/.env
             RolePermissionSeeder::class,    // Phase 2.C — Owner/Manager/Staff roles + permission matrix
+            AddonSeeder::class,             // Phase 3.D — SMS/storage/support/template packs
             // CategorySeeder::class,       // Phase 5.A — default Bangladeshi apparel taxonomy
         ]);
     }
