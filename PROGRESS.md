@@ -9,14 +9,17 @@
 
 ```
 Total Tasks: 829
-Completed:   226
-Remaining:   603
-Progress:    27.26%
+Completed:   255
+Remaining:   574
+Progress:    30.76%
 ```
 
-**Last updated:** 2026-08-18
-**Current phase:** Phase 3 — Subscription, Plans & Billing — 3.A, 3.C, 3.D, and 3.E all complete (3.C mocked-only, see blocker below). 3.B remains the phase's only partially-complete section: trial start, cancel, and the state machine are done; subscribe-with-coupon, upgrade/downgrade-with-proration, auto-renewal, and dunning remain SKIPPED — the coupon/payment half of that blocker is now resolved (3.D), but upgrade/downgrade proration specifically still needs a real subscription period end date that only the still-unbuilt renewal job would ever set (see 3.E's own note on why that item was left SKIPPED rather than faked).
-**Next task:** Phase 4 — Store, Branch & Staff Management. 4.A (Backend): `stores`/`store_hours`/`kiosk_devices`/`shifts`/`franchise_groups` tables, store CRUD with plan branch-limit enforcement, kiosk pairing/claim/heartbeat, staff shift scheduling and performance aggregation, inter-branch stock lookup, custom subdomain/domain assignment. 4.B (Frontend): store list/create/edit/branding pages, kiosk pairing UI, shift scheduler, staff performance report, custom domain settings. Phase 3's remaining SKIPPED items (Phase 3.B's upgrade/downgrade proration, the 3.C auto-refund trigger) both wait on later phases (a renewal job; Phase 13's Mission Control tenant management) and don't block Phase 4 starting.
+**Last updated:** 2026-08-21
+**Current phase:** Phase 4 — Store, Branch & Staff Management — **complete**, apart from four deliberately skipped items (two backend, two frontend) that all reduce to the same two missing dependencies: `try_on_sessions` (Phase 6) for staff performance metrics, and `products`/`product_variants` (Phase 5) for inter-branch stock. Each is marked `SKIPPED` with its reason in the checklist below rather than faked. 4.A shipped branches with plan branch-limit enforcement, weekly opening hours with a kiosk-active window, the full kiosk device lifecycle (register → pairing code → claim → heartbeat → suspend/unpair), display settings, staff shift rostering with overlap and overnight handling, franchise consolidated roll-ups, subdomain assignment and DNS-TXT-verified custom domains. 4.B shipped every matching screen in the dashboard plus the kiosk app's own pairing screen.
+
+**Verification:** 268 backend feature tests pass (75 of them new, in `tests/Feature/Store/*` and `tests/Feature/Kiosk/*`); Larastan and Pint clean. All four frontend apps build, lint and test clean. Phase 4.B was additionally driven end to end in a real browser against the real backend — branch creation with map-link coordinate extraction, opening hours, kiosk pairing (dashboard mints a code, the kiosk app claims it, the dashboard modal flips to "Paired" on its own poll), display settings, shift scheduling, and a custom-domain request through a real DNS TXT lookup — with zero console errors.
+
+**Next task:** Phase 5 — Product & Catalog Management. Two Phase 4 items unblock as soon as its product tables land: the inter-branch stock availability API and its dashboard widget.
 
 **Blocker carried forward from 3.C (unresolved):** `SSLC_STORE_ID`/`SSLC_STORE_PASSWORD` in `backend/.env` are still empty — SSLCommerz sandbox credentials (free to register at [sslcommerz.com](https://sslcommerz.com)) are needed before `SslCommerzService`'s real API calls (session initiate, order validation, refund) can be verified against anything but `Http::fake()` mocks. The user was asked at the start of Phase 3.C and chose to proceed without credentials for now (2026-08-18) — all of 3.C/3.D was built and tested against mocks (64 tests across `tests/Feature/Payment/*` and `tests/Feature/Billing/*`), and the Phase 3.E frontend was additionally verified live in a real browser against the real backend, but live SSLCommerz sandbox verification is still an open item before Phase 3 can be called done fully end-to-end. The two refund endpoint paths (`SSLC_REFUND_INITIATE_ENDPOINT`/`SSLC_REFUND_QUERY_ENDPOINT`) are an additional, related gap — deliberately left unconfigured rather than hardcoded to a guessed URL; see Decision D-18.
 
@@ -47,6 +50,10 @@ Decisions that shape the build, recorded so they are not re-litigated later.
 | D-16 | 2026-08-17 | **`ResolveTenant`'s authenticated-user fallback resolves the bearer token directly against `PersonalAccessToken::findToken()`, never `$request->user()` or `Auth::guard('sanctum')->user()`.** | Phase 2.C's staff/audit-log routes were the first to actually depend on this fallback (`EnsureTenantIsActive`/`EnsureTwoFactorIsEnabled`, unattached to any route until now) and its feature tests caught two more systemic bugs: (1) bare `$request->user()` resolves against `config('auth.defaults.guard')` ('web', session-based) since this middleware runs *before* any route's own `auth:sanctum` middleware — it silently never worked; (2) `Auth::guard('sanctum')->user()` "worked" in isolation but Laravel's `AuthManager` caches guard instances (and Sanctum's `RequestGuard` caches its resolved user on top of that) for the container's lifetime, which — in a test making sequential requests as two different principals (`ImpersonationTest`) — returned the *first* request's cached principal on the second call. | The same class of bug as D-13's two login-time scope failures, caught the same way: real feature tests against real routes, not inspection. A direct, stateless `PersonalAccessToken::findToken($bearerToken)` lookup has no guard-instance to cache and re-resolves fresh on every call — see `ResolveTenant::resolveFromAuthenticatedUser()`'s docblock for the full account, including why this is a testing-only failure mode (production is one-request-per-process, per D-01, with no cross-request container reuse). |
 | D-18 | 2026-08-18 | **SSLCommerz's refund API endpoints (`SSLC_REFUND_INITIATE_ENDPOINT`/`SSLC_REFUND_QUERY_ENDPOINT`) are deliberately left unconfigured in `config/sslcommerz.php` rather than hardcoded to a guessed URL, unlike the session-initiate (`gwprocess/v4/api.php`) and order-validation (`validationserverAPI.php`) endpoints, which are hardcoded per sandbox/live.** | Those two endpoints are SSLCommerz's well-known, extensively documented REST paths, safe to hardcode with confidence. The refund endpoint's exact path could not be independently verified without a working sandbox account (see this phase's own blocker note) — shipping a guessed URL dressed up as a verified constant would risk a silent, hard-to-diagnose failure in production refund flows, worse than an explicit configuration error. | `App\Services\Billing\SslCommerzService::initiateRefund()` throws a clear `PaymentGatewayException` naming the missing env var if called before these are set. Confirm the correct path against the SSLCommerz merchant panel's own API reference once sandbox credentials exist, then set both via env — no code change needed at that point. |
 | D-19 | 2026-08-18 | **Two Phase 3.D modelling choices made to keep scope bounded, both explained in full at their code site rather than re-litigated here: (1) coupons have no persisted "cart" — `POST /billing/coupon/preview` is stateless, a redemption is only ever written when a real Invoice is created, so "remove coupon" needed no API of its own; (2) every add-on (SMS, storage, support, template) is modelled as a uniform consumable balance pack (`addons.unit_amount` required, never null) drawn down FIFO by `AddonConsumptionService`, rather than giving non-quantifiable add-ons like "priority support" a special nullable/boolean shape.** | Both are documented in depth on `CouponService` and `TenantAddon`/`addons` migration's own docblocks. Recorded here only so a future session doesn't rediscover the same trade-off from scratch: a real per-user coupon-cart concept and a mixed balance/flag add-on model were both considered and rejected as unnecessary complexity for what Phase 3.D actually needed. | If a future phase needs a persisted multi-item cart (e.g. bundling a plan + multiple add-ons in one checkout) or a genuinely non-quantifiable add-on (e.g. a one-time white-label unlock with no "amount"), that is the point to revisit these, not before. |
+| D-20 | 2026-08-21 | **A `ForgetStaleAuthGuards` middleware is prepended to the whole `api` group, calling `Auth::forgetGuards()` at the start of every request**, so `$request->user()` always resolves against the current request's credentials. | This is the unfixed half of Decision D-16. That decision gave *ResolveTenant* a stateless token lookup, but every controller behind `auth:sanctum` still calls `$request->user()`, and that path was still broken: `AuthManager::guard()` memoises each guard for the container's lifetime, and while Sanctum re-injects the current Request into its `RequestGuard` on rebinding (`app()->refresh('request', $guard, 'setRequest')`), `RequestGuard::user()` short-circuits on its own cached `$this->user`, which `setRequest()` never clears. Measured, not assumed: two sequential requests carrying two different bearer tokens both resolved to the *first* token's user — `GET /auth/me` returned the wrong account outright, and `GET /staff` returned an empty list because the controller filtered on the stale user's `tenant_id` while TenantScope filtered on the real one, so the two conditions contradicted each other. Found by Phase 4's first test that acted as two tenants in one method. | D-16 called this class of failure "testing-only" on the grounds that production runs one request per process (D-01). That holds for php-fpm, but it is an assumption about the *runtime*, not a property of the code — anything reusing a container across requests (Octane, RoadRunner, a long-lived worker) would leak one user's session into the next user's request, which is a cross-tenant data leak rather than a test artefact. One array reset per request removes the assumption. Any new middleware must run *after* this one if it reads an authenticated principal. |
+| D-21 | 2026-08-21 | **Kiosk devices authenticate through a dedicated `AuthenticateKioskDevice` middleware and a `kiosk_devices.device_token_hash` column — deliberately not Sanctum, and not a second auth guard.** The middleware is a fifth audited entry on Decision D-13's bypass list. | A kiosk is not a user: nobody signs in at it, it has no email, password or 2FA, and its credential must survive reboots and staff turnover unattended. Modelling it as a Sanctum tokenable would mean either a second guard whose provider resolves a non-User model, or widening `PersonalAccessToken`'s morph map for a principal sharing none of a user's semantics — both more machinery than a token lookup needs. Like login and pairing, kiosk authentication must discover *which* tenant the caller belongs to before a tenant context can exist, hence the `withoutTenantScope()` lookup. | Building it caught a third instance of D-13's fail-closed class, again by running the code rather than by inspection: the middleware originally eager-loaded `$device->store` in the same query as the device, but `Store` carries TenantScope and no context existed yet, so the branch resolved to `null` and *every* kiosk request 401'd as "no longer assigned to a branch". The fix — resolve the Tenant from `kiosk_devices.tenant_id` (Tenant is the one model without TenantScope), set the context, *then* read the relation — is the general shape any future non-user principal must follow. |
+| D-22 | 2026-08-21 | **`ApiExceptionRenderer` now matches `AccessDeniedHttpException` alongside `AuthorizationException`.** | Laravel's handler runs `prepareException()` *before* the `withExceptions()->render()` callbacks, and that step rewraps every `AuthorizationException` — including the one every `$this->authorize()` call throws — into an `AccessDeniedHttpException`. The existing `AuthorizationException` arm was therefore unreachable, and every policy denial in the app fell through to the generic `HttpExceptionInterface` arm, returning `error_code: http_error` with a generic message instead of the `unauthorized` code the API contract promises. Latent since Phase 2.C; surfaced by the first Phase 4 test to assert on the error code rather than just the 403 status. | Every policy-gated 403 across the whole app now emits `unauthorized`, so the frontend can tell a permission failure apart from a plan gate (`plan_feature_unavailable` / `plan_limit_exceeded`) without inspecting the message. Assert on `error_code`, not just status, when adding authorization tests — the status alone would not have caught this. |
+| D-23 | 2026-08-21 | **Three Phase 4 modelling choices, recorded so they are not rediscovered: (1) a permanently *closed* branch does not consume a plan `branches` slot, while an *inactive* one does; (2) `franchise_group_members.member_tenant_id` is deliberately not named `tenant_id`, and `FranchiseGroupMember` deliberately does not use `BelongsToTenant`; (3) opening hours are stored as weekly wall-clock `TIME` values in the branch's own `stores.timezone`, never as DATETIME.** | (1) A tenant that relocates a shop would otherwise be charged for the old address forever, while a shop shut for Ramadan genuinely still occupies a slot. (2) That column is the *franchisee*, not the franchisor — applying TenantScope to it would filter a franchisor's own membership list down to itself, exactly backwards; isolation is enforced one level up, on the tenant-scoped `FranchiseGroup`. (3) Trading hours recur weekly and are what a manager writes on paper; a single absolute instant cannot express "10:00 every Monday", and storage is UTC per D-07. | (1) `StoreStatus::countsTowardBranchLimit()` and `Store::scopeCountingTowardLimit()` are the only places this is decided; re-activating a closed branch re-checks the cap, which is the one status change that can push a tenant over their plan. (2) Any future cross-tenant reporting table should follow the same naming rule. (3) Every comparison goes through `StoreHour::kioskIsOpenAt()`, which reads a window whose end is earlier than its start as wrapping past midnight rather than as an empty range — the kiosk guard, the availability endpoint and the editor all share that one implementation. |
 
 ### Rules arising from D-01
 
@@ -389,42 +396,42 @@ Verified live, not just build/lint/test: `php artisan serve` + `npm run dev --wo
 
 ## 4.A Backend
 
-- [ ] Create `stores` table (tenant_id, name, code, is_main, phone, email, address, city, area, lat, lng, map_url, logo, banner, socials JSON, status)
-- [ ] Create `Store` model with tenant scope and relations
-- [ ] Build store CRUD APIs with plan branch-limit enforcement
-- [ ] Build store profile update API (logo, banner, contact, social links, Google Map link)
-- [ ] Create `store_hours` table and kiosk active-hours configuration
-- [ ] Build kiosk hours API and enforcement in the kiosk session guard
-- [ ] Create `kiosk_devices` table (store_id, name, pairing_code, device_fingerprint, status, last_seen_at, settings JSON)
-- [ ] Build kiosk pairing API — generate short-lived pairing code
-- [ ] Build kiosk claim API exchanging the pairing code for a long-lived device token
-- [ ] Build kiosk heartbeat API updating `last_seen_at` and reporting health
-- [ ] Build kiosk device CRUD and remote unpair API
-- [ ] Build kiosk display settings API (language, theme, idle timeout, screensaver playlist)
-- [ ] Create `shifts` table and staff shift assignment APIs
-- [ ] Build shift schedule listing by store and date range
-- [ ] Build staff performance aggregation (try-ons handled, sessions, conversions)
-- [ ] Build inter-branch stock availability API for a given product/variant
-- [ ] Create `franchise_groups` table linking multiple tenants/stores for enterprise monitoring
-- [ ] Build franchise consolidated view API (Enterprise/Max only)
-- [ ] Build custom subdomain assignment and validation API (`{slug}.fitmirror.com`)
-- [ ] Build custom domain request + verification (DNS TXT) API for Max plan
-- [ ] Write tests for branch limits, kiosk pairing, and inter-branch stock lookups
+- [x] Create `stores` table (tenant_id, name, code, is_main, phone, email, address, city, area, lat, lng, map_url, logo, banner, socials JSON, status)
+- [x] Create `Store` model with tenant scope and relations
+- [x] Build store CRUD APIs with plan branch-limit enforcement
+- [x] Build store profile update API (logo, banner, contact, social links, Google Map link)
+- [x] Create `store_hours` table and kiosk active-hours configuration
+- [x] Build kiosk hours API and enforcement in the kiosk session guard
+- [x] Create `kiosk_devices` table (store_id, name, pairing_code, device_fingerprint, status, last_seen_at, settings JSON)
+- [x] Build kiosk pairing API — generate short-lived pairing code
+- [x] Build kiosk claim API exchanging the pairing code for a long-lived device token
+- [x] Build kiosk heartbeat API updating `last_seen_at` and reporting health
+- [x] Build kiosk device CRUD and remote unpair API
+- [x] Build kiosk display settings API (language, theme, idle timeout, screensaver playlist)
+- [x] Create `shifts` table and staff shift assignment APIs
+- [x] Build shift schedule listing by store and date range
+- [ ] SKIPPED — Build staff performance aggregation (try-ons handled, sessions, conversions). Every metric named depends on `try_on_sessions`, which Phase 6 creates; there is no other source for "try-ons handled" or "conversions" today. Building it against staff/shift counts alone would report numbers that look like performance data but measure nothing of the kind. Revisit in Phase 6.B once sessions exist.
+- [ ] SKIPPED — Build inter-branch stock availability API for a given product/variant. Blocked on Phase 5's `products`/`product_variants`/inventory tables, which do not exist. Same pattern as tenant provisioning in 2.A. Revisit in Phase 5.
+- [x] Create `franchise_groups` table linking multiple tenants/stores for enterprise monitoring
+- [x] Build franchise consolidated view API (Enterprise/Max only)
+- [x] Build custom subdomain assignment and validation API (`{slug}.fitmirror.com`)
+- [x] Build custom domain request + verification (DNS TXT) API for Max plan
+- [x] Write tests for branch limits, kiosk pairing, and inter-branch stock lookups — 75 tests across `tests/Feature/Store/*` and `tests/Feature/Kiosk/*`; the inter-branch stock half is not covered because that API is SKIPPED above
 
 ## 4.B Frontend
 
-- [ ] Build store list page with status and quick stats
-- [ ] Build store create/edit form (profile, contact, address, map picker)
-- [ ] Build store branding page (logo and banner upload with crop)
-- [ ] Build store hours editor with per-day open/close and kiosk-active windows
-- [ ] Build kiosk devices page (list, pair new device, status, last seen)
-- [ ] Build kiosk pairing modal displaying the code and live claim status
-- [ ] Build kiosk display settings form
-- [ ] Build staff shift scheduler (weekly grid with drag assignment)
-- [ ] Build staff performance report page
-- [ ] Build inter-branch stock check widget on the product page
-- [ ] Build custom domain settings page with DNS verification instructions
-- [ ] Build kiosk app pairing screen consuming the pairing code
+- [x] Build store list page with status and quick stats
+- [x] Build store create/edit form (profile, contact, address, map picker)
+- [x] Build store branding page (logo and banner upload with crop)
+- [x] Build store hours editor with per-day open/close and kiosk-active windows
+- [x] Build kiosk devices page (list, pair new device, status, last seen)
+- [x] Build kiosk pairing modal displaying the code and live claim status
+- [x] Build kiosk display settings form
+- [x] Build staff shift scheduler (weekly grid with drag assignment)
+- [ ] SKIPPED — Build staff performance report page. Mirrors 4.A's own skip: there is no performance data to report until Phase 6 creates try-on sessions.
+- [ ] SKIPPED — Build inter-branch stock check widget on the product page. The backend API is SKIPPED, and there is no product page to host it until Phase 5.
+- [x] Build custom domain settings page with DNS verification instructions
+- [x] Build kiosk app pairing screen consuming the pairing code
 
 ---
 

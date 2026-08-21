@@ -976,7 +976,7 @@ _Every variable is added to this table as it is introduced. Values shown are exa
 | `APP_TIMEZONE` | Server timezone | `Asia/Dhaka` | Yes |
 | `APP_LOCALE` | Default locale | `bn` | Yes |
 | `APP_FALLBACK_LOCALE` | Fallback locale | `en` | Yes |
-| `TENANT_DEFAULT_TIMEZONE` | Presentation-layer display timezone (storage stays UTC per Decision D-07) | `Asia/Dhaka` | Yes |
+| `TENANT_DEFAULT_TIMEZONE` | Presentation-layer display timezone, and the default `stores.timezone` for a new branch (storage stays UTC per Decision D-07). Exposed as `config('app.tenant_default_timezone')` since Phase 4.A — it had been in `.env.example` since Phase 1.A but was never wired into a config file, so any read of it would have broken under `config:cache` | `Asia/Dhaka` | Yes |
 | `FRONTEND_URL` | Shop owner dashboard URL, used in emails | `http://localhost:5173` | Yes |
 | `KIOSK_URL` | Kiosk app URL | `http://localhost:5174` | Yes |
 | `PORTAL_URL` | Customer portal URL | `http://localhost:5175` | Yes |
@@ -1114,7 +1114,7 @@ Relationships: …
 |---|---|
 | Tenancy & Auth | `tenants`, `users`, `super_admins`, `roles`, `permissions`, `model_has_roles`, `login_attempts`, `personal_access_tokens`, `activity_log` |
 | Plans & Billing | `plans`, `plan_limits`, `plan_features`, `feature_flags`, `subscriptions`, `invoices`, `invoice_items`, `invoice_number_sequences`, `payments`, `refunds`, `coupons`, `coupon_redemptions`, `addons`, `tenant_addons` |
-| Stores & Staff | `stores`, `store_hours`, `kiosk_devices`, `shifts`, `franchise_groups` |
+| Stores & Staff | `stores`, `store_hours`, `kiosk_devices`, `shifts`, `franchise_groups`, `franchise_group_members`, `custom_domain_requests` |
 | Catalog | `categories`, `attributes`, `attribute_values`, `occasions`, `tags`, `taggables`, `products`, `product_variants`, `product_images`, `product_attribute`, `product_occasion`, `size_charts`, `price_history`, `stock_movements`, `catalog_links` |
 | Try-On | `tryon_sessions`, `tryon_events`, `garment_assets`, `size_estimations`, `fit_feedback` |
 | Campaigns | `campaigns`, `campaign_products`, `campaign_variants`, `campaign_recipients`, `campaign_metrics`, `campaign_templates`, `link_clicks`, `referrals` |
@@ -1139,8 +1139,8 @@ Purpose: one row per shop owner account — the root of every tenant-scoped quer
 | `id` | bigint unsigned | No | — | Primary key — this is the `tenant_id` every other tenant-owned table references |
 | `name` | string | No | — | Shop/business name |
 | `slug` | string | No | — | Unique, URL-safe identifier — also the subdomain and the `X-Tenant` header value in dev |
-| `subdomain` | string | No | — | Currently always equal to `slug`; kept as its own column since a future custom-subdomain feature could let it diverge |
-| `custom_domain` | string | Yes | null | Max-plan custom domain (Phase 4.A), checked before subdomain in `ResolveTenant` |
+| `subdomain` | string | No | — | Kept in lockstep with `slug` by `App\Services\Store\SubdomainService` — `ResolveTenant` matches an incoming host against `slug`, while this is what the dashboard displays, so both are always written together (Phase 4.A) |
+| `custom_domain` | string | Yes | null | Max-plan custom domain, checked before subdomain in `ResolveTenant`. Populated **only** once a `custom_domain_requests` row passes its DNS TXT challenge (Phase 4.A) |
 | `owner_id` | bigint unsigned | Yes | null | FK → `users.id`, `nullOnDelete`. Nullable because provisioning creates the tenant before the owner user exists — backfilled once the owner is created |
 | `status` | string | No | `pending` | Backed by `App\Enums\TenantStatus` — `pending`, `trial`, `active`, `suspended`, `expired`, `rejected` |
 | `trial_ends_at` | timestamp | Yes | null | Set when a trial starts (Phase 3.B) |
@@ -1210,6 +1210,153 @@ Purpose: append-only audit trail backing progressive account lockout (`App\Servi
 
 Indexes: composite on `(email, created_at)`, matching `LoginAttempt::consecutiveFailures()`'s query shape.
 
+---
+
+### `stores`
+Purpose: one row per physical branch. The plan's `branches` limit caps how many non-closed branches a tenant may hold at once, enforced in `App\Services\Store\StoreService` (never in a generic middleware — see `PlanService::assertWithinLimit()`'s docblock). Soft-deleted, because kiosk devices, shifts and (from Phase 6) try-on sessions all reference `store_id`.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `name` | string | No | — | Branch name shown in the dashboard and on the kiosk |
+| `code` | string | No | — | Tenant-authored short code (`DHK-01`), upper-cased on write. Unique **per tenant**, not globally |
+| `is_main` | boolean | No | `false` | Exactly one per tenant. The first branch created is always main; promoting another demotes the previous one |
+| `phone` | string | Yes | null | |
+| `email` | string | Yes | null | |
+| `address` | string | Yes | null | |
+| `city` | string | Yes | null | |
+| `area` | string | Yes | null | |
+| `lat` | decimal(10,7) | Yes | null | ~1.1cm precision. Decimal, not float, so two reads of the same row compare equal |
+| `lng` | decimal(10,7) | Yes | null | |
+| `map_url` | string(2048) | Yes | null | Google Maps share link |
+| `logo` | string | Yes | null | Relative path on the `tenant` disk (`App\Support\TenantStorage`), never an absolute URL — the disk is local in dev and S3/R2 in production |
+| `banner` | string | Yes | null | Same as `logo` |
+| `socials` | json | Yes | null | `{ "facebook": "https://…", … }`. Keys restricted to `Store::SUPPORTED_SOCIALS`; a JSON column so adding a network later is not a migration |
+| `timezone` | string | No | `Asia/Dhaka` | The zone `store_hours` wall-clock times are interpreted in. Defaults from `config('app.tenant_default_timezone')` |
+| `status` | string | No | `active` | `App\Enums\StoreStatus` — `active`, `inactive`, `closed`. Only `closed` frees a plan slot (Decision D-23) |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+| `deleted_at` | timestamp | Yes | null | Soft delete |
+
+Indexes: unique `(tenant_id, code)`; composite `(tenant_id, status)`.
+
+---
+
+### `store_hours`
+Purpose: one row per branch per weekday — the shop's trading window and the (optionally narrower) window a paired kiosk may run sessions in.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `store_id` | bigint unsigned | No | — | FK → `stores.id`, `cascadeOnDelete` |
+| `day_of_week` | tinyint unsigned | No | — | 0 = Sunday … 6 = Saturday, matching `Carbon::dayOfWeek` so no translation is needed between PHP and SQL |
+| `is_closed` | boolean | No | `false` | When true, every time column is null |
+| `opens_at` | time | Yes | null | Wall clock in `stores.timezone`, **not** a DATETIME — these recur weekly and are never a single absolute instant (Decision D-23) |
+| `closes_at` | time | Yes | null | Earlier than `opens_at` means the window wraps past midnight |
+| `kiosk_opens_at` | time | Yes | null | Null means "same as the shop hours", never "never" |
+| `kiosk_closes_at` | time | Yes | null | Both kiosk columns must be set together or both left null |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+
+Indexes: unique `(store_id, day_of_week)`; index on `tenant_id`.
+
+---
+
+### `kiosk_devices`
+Purpose: one row per physical kiosk (tablet or laptop). Authenticates by long-lived device token through `App\Http\Middleware\AuthenticateKioskDevice`, never by a user session — see Decision D-21.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `store_id` | bigint unsigned | No | — | FK → `stores.id`, `cascadeOnDelete` |
+| `name` | string | No | — | Human label ("Front Desk") |
+| `pairing_code` | string(12) | Yes | null | **Globally unique**, stored in the clear: it is displayed in the dashboard so it must be recoverable, expires in 15 minutes, and is single-use. Global because `claim()` resolves it before any tenant is known |
+| `pairing_code_expires_at` | timestamp | Yes | null | |
+| `device_token_hash` | string(64) | Yes | null | sha256 of the long-lived device token, unique. The raw token is returned exactly once at claim time and never recoverable — same reasoning as `staff_invitations.token_hash` |
+| `paired_at` | timestamp | Yes | null | |
+| `device_fingerprint` | string | Yes | null | Stable per-device id the kiosk generates and reports at claim time. A label, never trusted for authentication |
+| `status` | string | No | `pending` | `App\Enums\KioskDeviceStatus` — `pending`, `paired`, `suspended`. A suspended device keeps its token hash so un-suspending needs no re-pairing |
+| `last_seen_at` | timestamp | Yes | null | Updated on every heartbeat; `isOnline()` allows two missed beats |
+| `last_seen_ip` | string(45) | Yes | null | |
+| `app_version` | string | Yes | null | Reported by the kiosk build (`__APP_VERSION__`) |
+| `health` | json | Yes | null | Last heartbeat's health payload — camera, network, storage, battery |
+| `settings` | json | Yes | null | Display settings; merged over `KioskDevice::DEFAULT_SETTINGS` on read, so an older row missing a newly added key still resolves it |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+
+Indexes: unique on `pairing_code` and `device_token_hash`; composite `(tenant_id, store_id)` and `(tenant_id, status)`.
+
+---
+
+### `shifts`
+Purpose: one staff member rostered at one branch for one wall-clock window on one date.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `store_id` | bigint unsigned | No | — | FK → `stores.id`, `cascadeOnDelete` |
+| `user_id` | bigint unsigned | No | — | FK → `users.id`, `cascadeOnDelete` — the rostered staff member |
+| `shift_date` | date | No | — | The day the shift *starts* |
+| `starts_at` | time | No | — | Wall clock |
+| `ends_at` | time | No | — | Earlier than `starts_at` means an overnight shift, rolled to the next day by `Shift::endsAtInstant()` |
+| `status` | string | No | `scheduled` | `App\Enums\ShiftStatus` — `scheduled`, `cancelled`. Cancelled shifts stay visible on the roster and no longer block an overlapping replacement |
+| `note` | string | Yes | null | |
+| `created_by` | bigint unsigned | Yes | null | FK → `users.id`, `nullOnDelete` |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+
+Indexes: `(tenant_id, shift_date)`, `(store_id, shift_date)`, `(user_id, shift_date)` — the last one backs the overlap check.
+
+---
+
+### `franchise_groups` / `franchise_group_members`
+Purpose: a franchisor's roll-up across the franchisee **tenants** it monitors. Gated to plans carrying the `franchise_management` feature.
+
+`franchise_groups`:
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | The franchisor that owns the group. FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `name` | string | No | — | |
+| `slug` | string | No | — | Unique per owning tenant |
+| `description` | string | Yes | null | |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+
+`franchise_group_members`:
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `franchise_group_id` | bigint unsigned | No | — | FK → `franchise_groups.id`, `cascadeOnDelete` |
+| `member_tenant_id` | bigint unsigned | No | — | The **franchisee**. FK → `tenants.id`, `cascadeOnDelete`. Deliberately *not* named `tenant_id`, and `FranchiseGroupMember` deliberately does not use `BelongsToTenant` — see Decision D-23 |
+| `label` | string | Yes | null | Franchisor's own label for the member shop |
+| `joined_at` | timestamp | No | `CURRENT_TIMESTAMP` | |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+
+Indexes: unique `(franchise_group_id, member_tenant_id)` named `franchise_group_members_group_member_unique` (the auto-generated name is 66 characters, past MySQL's 64-character identifier limit); index on `member_tenant_id`.
+
+---
+
+### `custom_domain_requests`
+Purpose: a tenant's claim on their own domain, pending a DNS TXT challenge. `tenants.custom_domain` is only populated once verification succeeds, so an unverified claim on someone else's domain is inert.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `domain` | string | No | — | **Globally unique** — two tenants must not hold competing pending claims on the same host, or the loser would only find out after publishing DNS |
+| `verification_token` | string(64) | No | — | The value published at `_fitmirror-verification.{domain}`. Generated once and kept across retries, so a retry does not invalidate a record already pasted into the tenant's DNS panel |
+| `status` | string | No | `pending` | `App\Enums\CustomDomainStatus` — `pending`, `verified`, `failed`. `failed` is retryable (usually propagation delay, not a wrong token) |
+| `verified_at` | timestamp | Yes | null | |
+| `last_checked_at` | timestamp | Yes | null | |
+| `last_error` | string | Yes | null | What the resolver actually found, shown verbatim in the dashboard |
+| `attempts` | smallint unsigned | No | `0` | |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+
+Indexes: unique on `domain`; composite `(tenant_id, status)`.
+
+---
 ---
 
 # 7. API Reference
@@ -1565,7 +1712,223 @@ The add-on marketplace catalog, and purchasing one — reuses the exact SSLComme
 Any plan-feature-gated route (`->middleware('plan.feature:{key}')`) returns `403` with `error_code: "plan_feature_unavailable"` and `errors: { feature, upgrade_url }`. Any limit check (`PlanService::assertWithinLimit()`, e.g. staff invites — §7.3a) throws `App\Exceptions\PlanLimitExceededException`, rendered the same way with `error_code: "plan_limit_exceeded"` and `errors: { limit, current, max, upgrade_url }` — one shared shape (`App\Support\PlanGateResponse`) so the dashboard can build a single "upgrade your plan" prompt component regardless of which check failed.
 
 ## 7.6 Store, Branch & Kiosk Endpoints
-_Empty — populated in Phase 4._
+
+Two distinct surfaces live here and never overlap:
+
+* **Dashboard routes** (`/stores/*`, `/kiosk-devices/*`, `/shifts/*`, `/tenant/*`, `/franchise-groups/*`) — `auth:sanctum` + `tenant.active` + `tenant.2fa`, authorized by `App\Policies\StorePolicy` against the `stores.*` / `kiosk.*` / `staff.*` permissions in `config/permissions.php`.
+* **Kiosk routes** (`/kiosk/*`) — authenticated by a long-lived **device token**, not a user session (`App\Http\Middleware\AuthenticateKioskDevice`, alias `kiosk.auth`; Decision D-21). Rate-limited by the `kiosk` limiter. Nothing here is reachable by a dashboard user, and nothing above is reachable by a kiosk.
+
+Every `{store}`, `{device}`, `{shift}` and `{group}` parameter resolves through implicit model binding, which runs through `TenantScope` — a cross-tenant id returns `404`, never `403`, so it is indistinguishable from an id that never existed.
+
+### Branches
+
+| Method | URL | Auth | Permission |
+|---|---|---|---|
+| GET | `/stores` | Bearer | `stores.view` |
+| POST | `/stores` | Bearer | `stores.create` |
+| GET | `/stores/{store}` | Bearer | `stores.view` |
+| PATCH | `/stores/{store}` | Bearer | `stores.update` |
+| POST | `/stores/{store}/branding` | Bearer | `stores.update` |
+| DELETE | `/stores/{store}` | Bearer | `stores.delete` |
+
+`GET /stores` response `200`:
+```json
+{
+  "success": true,
+  "data": {
+    "stores": [{
+      "id": 1, "name": "Gulshan Flagship", "code": "DHK-01", "is_main": true,
+      "phone": "+8801711223344", "email": null, "address": null,
+      "city": "Dhaka", "area": "Gulshan", "lat": 23.7925, "lng": 90.4078,
+      "map_url": "https://www.google.com/maps/@23.7925,90.4078,17z",
+      "logo_url": null, "banner_url": null,
+      "socials": { "facebook": "https://facebook.com/…" },
+      "timezone": "Asia/Dhaka", "status": "active", "status_label": "Active",
+      "kiosk_device_count": 2, "created_at": "2026-08-21T04:55:12+00:00"
+    }],
+    "meta": { "current_page": 1, "per_page": 20, "total": 1, "last_page": 1 },
+    "branch_limit": { "used": 1, "max": 3, "can_create_more": true }
+  }
+}
+```
+`branch_limit` rides along deliberately so the dashboard can disable "Add branch" without a second request. `max: null` means unlimited.
+
+`POST /stores` request: `{ "name", "code", "is_main"?, "phone"?, "email"?, "address"?, "city"?, "area"?, "lat"?, "lng"?, "map_url"?, "timezone"?, "status"?, "socials"? }`. `socials` accepts only the keys in `Store::SUPPORTED_SOCIALS` (`facebook`, `instagram`, `tiktok`, `youtube`, `whatsapp`, `website`) — any other key is a `422`, not silently dropped. Response `201` with the branch object above.
+
+Notes on `POST /stores`:
+* The tenant's **first** branch is always created as the main one, whatever `is_main` says.
+* Exceeding the plan's `branches` limit returns `403` `plan_limit_exceeded` with `errors: { limit: "branches", current, max, upgrade_url }`.
+* A duplicate `code` within the tenant returns `422` with `errors.code`. Codes are compared case-insensitively (upper-cased on write) and **including soft-deleted branches**, since the unique index spans them.
+
+`PATCH /stores/{store}`: any subset of the create fields. Two rules that only apply here:
+* Setting `is_main: false` on the current main branch is a `422` — promote another branch instead.
+* Moving a branch from `closed` back to `active`/`inactive` re-checks the plan cap, because only `closed` frees a slot (Decision D-23). This is the one status change that can return `plan_limit_exceeded`.
+
+`POST /stores/{store}/branding` — **multipart, POST not PATCH**, because PHP only parses a multipart body on POST. Fields: `logo` (image, ≤5 MB), `banner`, `remove_logo`, `remove_banner`. A request naming none of them is a `422`. Each upload deletes the file it supersedes, so re-uploading does not accumulate orphaned objects against the storage quota. Response `200` with the branch object.
+
+`DELETE /stores/{store}` — soft delete, `204`. Deleting the main branch while others exist is a `422`. Every kiosk device in the branch has its device token revoked in the same transaction: hardware in a removed branch must stop authenticating immediately.
+
+### Opening hours
+
+| Method | URL | Auth | Permission |
+|---|---|---|---|
+| GET | `/stores/{store}/hours` | Bearer | `stores.view` |
+| PUT | `/stores/{store}/hours` | Bearer | `stores.update` |
+
+`GET` response `200` always carries **all seven days**, filling in ones never configured, so the editor renders a complete week without inventing rows:
+```json
+{ "data": {
+  "store_id": 1, "timezone": "Asia/Dhaka", "is_configured": true,
+  "days": [{ "day_of_week": 0, "day_name": "Sunday", "is_closed": false,
+             "opens_at": "10:00:00", "closes_at": "22:00:00",
+             "kiosk_opens_at": "11:00:00", "kiosk_closes_at": "20:00:00" }],
+  "kiosk_availability": { "is_open": true, "timezone": "Asia/Dhaka",
+                          "local_time": "2026-08-21T18:22:03+06:00", "next_opens_at": null }
+} }
+```
+
+`PUT` request: `{ "days": [{ "day_of_week": 0-6, "is_closed": bool, "opens_at": "HH:MM", "closes_at": "HH:MM", "kiosk_opens_at"?: "HH:MM", "kiosk_closes_at"?: "HH:MM" }] }`. Replaces the whole week atomically — partial updates are not offered, so a half-applied week can never reach the kiosk guard. Rejected with `422` on: a duplicated `day_of_week`; a day that is open but missing either shop time; exactly one of the two kiosk times.
+
+Reading semantics, shared by the guard, the availability endpoint and the editor (`StoreHour::kioskIsOpenAt()`):
+* Kiosk times left blank mean **"whenever the shop is open"**, never "never".
+* A closing time earlier than the opening time is an **overnight window** that wraps past midnight, not an empty range.
+* A branch with **no hours configured at all** is always open to its kiosk — hours are an opt-in restriction, and defaulting to closed would brick every kiosk the moment it paired.
+
+### Kiosk devices (dashboard side)
+
+| Method | URL | Auth | Permission |
+|---|---|---|---|
+| GET | `/stores/{store}/kiosk-devices` | Bearer | `kiosk.view` |
+| POST | `/stores/{store}/kiosk-devices` | Bearer | `kiosk.manage` |
+| GET | `/kiosk-devices/{device}` | Bearer | `kiosk.view` |
+| POST | `/kiosk-devices/{device}/pairing-code` | Bearer | `kiosk.manage` |
+| POST | `/kiosk-devices/{device}/unpair` | Bearer | `kiosk.manage` |
+| POST | `/kiosk-devices/{device}/suspend` | Bearer | `kiosk.manage` |
+| POST | `/kiosk-devices/{device}/reactivate` | Bearer | `kiosk.manage` |
+| GET | `/kiosk-devices/{device}/settings` | Bearer | `kiosk.view` |
+| PUT | `/kiosk-devices/{device}/settings` | Bearer | `kiosk.manage` |
+| DELETE | `/kiosk-devices/{device}` | Bearer | `kiosk.manage` |
+
+The **raw pairing code is returned only by the three endpoints that mint one** (register, `pairing-code`, `unpair`). The list and show endpoints report `has_pending_code` and `pairing_code_expires_at` but never the code itself, so the device list cannot become a way to read every live code at once.
+
+`POST /stores/{store}/kiosk-devices` request: `{ "name", "settings"? }`. Response `201`:
+```json
+{ "data": { "id": 7, "name": "Front Desk", "status": "pending", "status_label": "Awaiting Pairing",
+            "is_online": false, "settings": { … }, "has_pending_code": true,
+            "pairing_code": "N5PRG3WT", "pairing_code_expires_at": "2026-08-21T05:10:00+00:00" } }
+```
+Pairing codes are 8 characters from a 32-symbol alphabet that excludes `I`, `O`, `0` and `1` — the pairs most often misread off a screen. They live 15 minutes and are single-use. Re-issuing overwrites the previous one, so a code left on a back-office screen stops working.
+
+`POST /kiosk-devices/{device}/unpair` revokes the device token and returns the device to `pending` **with a fresh code**, so the same hardware re-pairs without losing its name, settings or history.
+
+`POST /kiosk-devices/{device}/suspend` keeps the token hash — `KioskDeviceStatus::canAuthenticate()` blocks the requests on its own — so lifting a suspension is instant and needs nobody on the shop floor.
+
+`PUT /kiosk-devices/{device}/settings` request: any subset of `{ language, theme, idle_timeout_seconds, screensaver_playlist, show_branding, attract_loop_enabled }`. **Merged over what is stored, not replacing it.** `language` ∈ `bn|en`, `theme` ∈ `light|dark`, `idle_timeout_seconds` between 15 and 1800. Unknown keys are rejected.
+
+### Kiosk device API (device side)
+
+| Method | URL | Auth |
+|---|---|---|
+| POST | `/kiosk/claim` | **None** |
+| POST | `/kiosk/heartbeat` | Device token |
+| GET | `/kiosk/config` | Device token |
+| GET | `/kiosk/availability` | Device token |
+| POST | `/kiosk/sessions/authorize` | Device token + `kiosk.hours` |
+
+The token is sent as a normal `Authorization: Bearer` credential, or via `X-Kiosk-Token` for kiosk builds inside a webview that reserves the `Authorization` header.
+
+`POST /kiosk/claim` request: `{ "pairing_code", "device_fingerprint", "app_version"? }`. Response `201`:
+```json
+{ "data": { "device_token": "<64 chars, returned exactly once>",
+            "device": { "id", "name", "store_id", "status", "paired_at" } } }
+```
+Only the sha256 of the token is stored. An invalid code, an expired code and an already-claimed code all return the **same** `422` message — an unauthenticated caller must not be able to use this endpoint as an oracle for live codes. Carries the `auth` throttle on top of the `kiosk` one.
+
+`POST /kiosk/heartbeat` request: `{ "app_version"?, "health"? { camera_ok, network_ok, storage_free_mb, battery_percent, last_error } }`. Response `200`:
+```json
+{ "data": { "acknowledged_at", "next_heartbeat_in_seconds": 60,
+            "settings": { … }, "store_status": "active" } }
+```
+Current settings ride back on **every** heartbeat, so a change made in the dashboard reaches an unattended kiosk within a minute with no push channel or polling endpoint of its own.
+
+`GET /kiosk/config` returns the device, its settings, its branch's branding, and current availability — everything the kiosk needs to render itself. A `401` here means the device was unpaired from the dashboard; the kiosk app clears its stored token and returns to the pairing screen on its own.
+
+`POST /kiosk/sessions/authorize` is the one route behind the active-hours guard (`kiosk.hours`). It answers "may I serve a customer right now"; Phase 6's try-on session creation calls it before opening a session. Refusals: `403` `kiosk_outside_active_hours` (with the branch's `availability` payload attached) or `403` `kiosk_store_not_operational` when the branch's own status is not `active`.
+
+`GET /kiosk/availability` and `GET /kiosk/config` are deliberately **outside** that guard — a closed kiosk still has to render a "we're closed" screen with a countdown, and still has to heartbeat, or the dashboard would report every out-of-hours device as offline.
+
+Kiosk error codes: `kiosk_unauthenticated` (401), `kiosk_device_suspended` (403), `kiosk_outside_active_hours` (403), `kiosk_store_not_operational` (403).
+
+### Shifts
+
+| Method | URL | Auth | Permission |
+|---|---|---|---|
+| GET | `/shifts/schedule` | Bearer | `stores.view` |
+| POST | `/stores/{store}/shifts` | Bearer | `staff.update` |
+| PATCH | `/shifts/{shift}` | Bearer | `staff.update` |
+| POST | `/shifts/{shift}/cancel` | Bearer | `staff.update` |
+| DELETE | `/shifts/{shift}` | Bearer | `staff.update` |
+
+`GET /shifts/schedule?from=YYYY-MM-DD&to=YYYY-MM-DD&store_id=&user_id=` — bounded by the date range (max 92 days) rather than paginated, because a calendar grid that dropped its last cells onto page two would be wrong rather than merely truncated. Response `200`: `{ "data": { "from", "to", "shifts": [ { "id", "store_id", "store_name", "user_id", "staff_name", "staff_email", "shift_date", "starts_at": "09:00", "ends_at": "17:00", "is_overnight", "duration_minutes", "status", "status_label", "note" } ] } }`.
+
+`POST /stores/{store}/shifts` request: `{ "user_id", "shift_date": "YYYY-MM-DD", "starts_at": "HH:MM", "ends_at": "HH:MM", "note"? }`.
+
+`ends_at` earlier than `starts_at` is **valid** and means an overnight shift (22:00→06:00). There is deliberately no `after:starts_at` rule; `ShiftService` compares absolute instants instead, so an overnight shift genuinely collides with the next morning's rather than looking disjoint because the dates differ. Rejections (`422`): a staff member from another tenant (`user_id`); a shift longer than 16 hours or of zero length (`ends_at`); an overlap with the same person's other scheduled shift (`starts_at`, naming the conflicting window). A **cancelled** shift does not block a replacement.
+
+### Subdomain and custom domain
+
+| Method | URL | Auth | Gate |
+|---|---|---|---|
+| GET | `/tenant/subdomain` | Bearer | — |
+| GET | `/tenant/subdomain/check?subdomain=` | Bearer | `tenant_settings.update` |
+| POST | `/tenant/subdomain` | Bearer | `tenant_settings.update` |
+| GET | `/tenant/custom-domain` | Bearer | `plan.feature:custom_domain` + `tenant_settings.update` |
+| POST | `/tenant/custom-domain` | Bearer | same |
+| POST | `/tenant/custom-domain/verify` | Bearer | same |
+| DELETE | `/tenant/custom-domain` | Bearer | same |
+
+These sit on `tenant_settings.update`, not a store permission — the address is the whole account's, not one branch's, so a Manager (who has no `tenant_settings` grant by default) cannot change where the shop lives on the internet.
+
+`GET /tenant/subdomain/check` response `200`: `{ "data": { "available": bool, "subdomain": "zara-bd", "reason": null, "url": "https://zara-bd.fitmirror.com" } }`. `reason` carries the single, human-readable rejection: too short/long, invalid characters, reserved, or already taken. The assign endpoint returns the **same wording** in a `422`, so the live check and the save can never disagree. Carries the `tenant` throttle, since it is called as the owner types. Rules: 3–63 characters, lowercase alphanumerics and hyphens, not starting or ending with a hyphen, not an `xn--`-shaped punycode prefix, not in `SubdomainService::RESERVED`, not taken by another tenant (including soft-deleted ones). Assigning writes `tenants.subdomain` **and** `tenants.slug` together — `ResolveTenant` matches the host against `slug`, so writing one without the other would produce a displayed address that does not resolve.
+
+`POST /tenant/custom-domain` request: `{ "domain" }`. A pasted URL is normalised, not rejected: the scheme, any path and a trailing dot are stripped, so `https://Shop.Example.com/` becomes `shop.example.com`. Response `201`:
+```json
+{ "data": { "id", "domain": "shop.example.com", "status": "pending",
+            "status_label": "Awaiting DNS Verification", "is_verified": false,
+            "dns": { "type": "TXT", "name": "_fitmirror-verification.shop.example.com",
+                     "value": "fitmirror-verify-…", "ttl": 300 },
+            "attempts": 0, "verified_at": null, "last_checked_at": null, "last_error": null } }
+```
+The `dns` block is served by the API rather than rebuilt client-side, so what the tenant is told to publish and what the verifier looks for cannot drift apart. Rejections (`422`): a malformed hostname; any `fitmirror.com` / `fitmirror.io` / `localhost` suffix; a domain already claimed or in use by another tenant.
+
+`POST /tenant/custom-domain/verify` resolves the TXT record. **A record that has not propagated yet is a `200`, not an error** — the dashboard polls this, and propagation delay is the expected answer. On no match the request goes to `failed` with `last_error` describing what was actually found, and stays retryable **with the same token**, so a retry never invalidates a record already pasted into the tenant's DNS panel. On a match, `tenants.custom_domain` is populated in the same transaction — that single write is what makes `ResolveTenant` answer on the host. `404` `custom_domain_not_requested` if no domain has been added.
+
+The DNS lookup goes through the `App\Support\Dns\DnsResolver` interface (`SystemDnsResolver` in every environment, `Tests\Support\FakeDnsResolver` under test), for the same reason SSLCommerz's HTTP calls go through the `Http` facade.
+
+### Franchise groups
+
+| Method | URL | Auth | Gate |
+|---|---|---|---|
+| GET | `/franchise-groups` | Bearer | `plan.feature:franchise_management` |
+| POST | `/franchise-groups` | Bearer | same |
+| GET | `/franchise-groups/{group}/overview` | Bearer | same |
+| POST | `/franchise-groups/{group}/members` | Bearer | same |
+| DELETE | `/franchise-groups/{group}/members/{memberTenantId}` | Bearer | same |
+| DELETE | `/franchise-groups/{group}` | Bearer | same |
+
+`POST /franchise-groups` request: `{ "name", "description"?, "member_tenant_ids"?: [] }`. The franchisor's own tenant is **always** added as a member — a roll-up excluding the flagship it was created from would be missing the shop the owner most expects to see.
+
+`GET /franchise-groups/{group}/overview` response `200`:
+```json
+{ "data": {
+  "group": { "id", "name", "slug", "description" },
+  "members": [{ "tenant_id", "name", "slug", "label", "status", "is_group_owner", "stores", "staff", "joined_at" }],
+  "totals": { "tenants": 3, "stores": 6, "staff": 5 }
+} }
+```
+Aggregated with two grouped cross-tenant queries rather than a loop, so a 200-shop franchise is three queries, not four hundred. `stores` counts only operational branches. **Try-on and revenue columns are deliberately absent** rather than zeroed — `try_on_sessions` does not exist until Phase 6, and a zero would read as a real measurement of nothing.
+
+`member_tenant_ids` deliberately carries no `exists:tenants,id` rule: that would confirm to any caller whether an arbitrary tenant id is real. An unresolvable id returns one generic `422`. Removing the group owner from its own group is a `422`. Deleting a group removes only the group and its memberships — no franchisee tenant is affected, since membership is a reporting relationship, never ownership.
 
 ## 7.7 Catalog Endpoints
 _Empty — populated in Phase 5._
@@ -1765,14 +2128,55 @@ _To be filled in Phase 9._
 
 **Feature scope:** multi-branch support, inter-branch stock check, Owner/Manager/Staff role system, activity audit log, shift management, staff performance reports, kiosk hours configuration, store profile, franchise management, custom domain (Max).
 
-**Owner/Manager/Staff role system and activity audit log — built in Phase 2.C** (the rest of this section — multi-branch, shifts, kiosk hours — is still Phase 4):
+**Owner/Manager/Staff role system and activity audit log — built in Phase 2.C:**
 - Roles are seeded by `RolePermissionSeeder` from the module × action matrix in `config/permissions.php` — Owner gets every permission (`*`), Manager gets everything except billing/tenant-settings/staff-deletion, Staff is read-only across catalog/customer/report modules. See PROGRESS.md Decision D-14 for why these are global, name-shared spatie roles rather than spatie's per-tenant "teams" feature (not needed until Max-plan custom roles exist).
 - Staff join via invite/accept, never direct creation — `StaffInvitationService` (`app/Services/Staff/`). An invitation is a `staff_invitations` row with a sha256-hashed token; no `User` exists until acceptance.
 - The tenant owner (`Tenant::owner_id`) is structurally immutable through this surface: no permission grant lets anyone but the owner themselves change, deactivate, or delete that account (`UserPolicy`).
 - Activity logging: `App\Models\Activity` replaces spatie/laravel-activitylog's own model, adding a `tenant_id` column filled the same way as every other `BelongsToTenant` model — the audit log (`GET /audit-log`, §7.3a) is itself tenant-isolated by `TenantScope`, not just filtered in the query. Only `Tenant` and `User` log activity today (the only two real tenant-facing models); every model added in a later phase should add `LogsActivity` + a `getActivitylogOptions()` the same way.
 - Mission Control impersonation (`POST /api/v1/mission/impersonate/{user}`, §7.15) is not part of this module's own RBAC — it's a super-admin capability, gated by `SuperAdminPermission::Tenants`, that issues a short-lived token *as* a tenant user. Every impersonation is itself an audit-logged event the tenant can see.
 
-_Multi-branch, shift management, kiosk hours, franchise, and custom domain: to be filled in Phase 4._
+**Multi-branch, kiosk devices, shift management, franchise and custom domain — built in Phase 4:**
+
+*Branches (`App\Models\Store`, `App\Services\Store\StoreService`)*
+- One `stores` row per physical branch, tenant-scoped like everything else. The plan's `branches` limit is enforced in the service at the point of creation, not by middleware — the service counts its own resource and hands the count to `PlanService::assertWithinLimit()`, the pattern `StaffInvitationService` established.
+- Exactly one main branch per tenant, structurally: the first branch created is always main, promoting another demotes the previous one, unsetting the flag directly is rejected, and the main branch cannot be deleted while others exist.
+- A **permanently closed** branch keeps its history but frees its plan slot; a **temporarily inactive** one does not (Decision D-23). Re-activating a closed branch therefore re-checks the cap — the one status change that can return `plan_limit_exceeded`.
+- Branches are soft-deleted, because kiosk devices, shifts and (from Phase 6) try-on sessions all reference `store_id`. Deleting one revokes its kiosk device tokens in the same transaction: hardware in a removed branch must stop authenticating immediately.
+- Logo and banner live on the tenant disk under `tenants/{id}/stores/{store}/`, via `App\Support\TenantStorage` — never absolute URLs, since the disk is local in dev and S3/R2 in production. Each upload deletes the file it supersedes.
+
+*Opening hours (`store_hours`, `App\Services\Store\StoreHoursService`)*
+- Weekly wall-clock `TIME` values interpreted in the branch's own `stores.timezone`, never DATETIME — storage is UTC (Decision D-07) but "10:00 every Monday" is not an instant.
+- The kiosk window may be narrower than the shop's trading hours; leaving it blank means "whenever we're open", never "never". A branch with no hours configured at all is always open to its kiosk — hours are an opt-in restriction, and defaulting to closed would brick every kiosk the moment it paired.
+- A closing time earlier than an opening time is read as **wrapping past midnight**, not as an empty range, and yesterday's row is consulted as well as today's so an overnight window still reads as open at 01:00. All of that lives in one method (`StoreHour::kioskIsOpenAt()`) shared by the guard, the availability endpoint and the editor, so the three cannot drift.
+
+*Kiosk devices (`kiosk_devices`, `App\Services\Kiosk\KioskPairingService`)*
+- Lifecycle: register in the dashboard → short-lived pairing code → the device claims it for a long-lived token → heartbeat → suspend / unpair / delete.
+- Two secrets, handled differently on purpose. The **pairing code** is stored in the clear (it is displayed in the dashboard so it must be recoverable, expires in 15 minutes, and is single-use) and is globally unique, because `claim()` has to resolve it before any tenant is known. The **device token** is only ever stored as a sha256 digest and returned exactly once — same reasoning as `staff_invitations.token_hash`.
+- Authentication is a dedicated middleware, not Sanctum and not a second auth guard — see Decision D-21 for why, and for the fail-closed bug that building it surfaced.
+- Display settings are merged over `KioskDevice::DEFAULT_SETTINGS` on read, so a device row predating a newly added key still resolves it, and they ride back on **every heartbeat**, so a dashboard change reaches unattended hardware within a minute without a push channel.
+- Suspension keeps the token hash; only the status blocks requests, so lifting it is instant and needs nobody on the shop floor.
+
+*Shifts (`shifts`, `App\Services\Store\ShiftService`)*
+- A shift is a **plan** — "this person is rostered at this branch from 09:00 to 17:00 on this date". Attendance is not modelled and is not part of Phase 4.
+- Overnight shifts are expressed by the end time being earlier than the start time. Overlap is checked against absolute instants derived by the model, scanning the day before, of, and after — so a 22:00–06:00 shift genuinely conflicts with the next morning's 05:00 start rather than looking disjoint because the dates differ.
+- Cancelling keeps the shift visible on the roster (with its history) and stops it blocking a replacement; only `scheduled` shifts occupy a person's time.
+
+*Franchise groups (`franchise_groups`, `App\Services\Store\FranchiseService`)*
+- A franchisor's roll-up across franchisee **tenants**. Gated by `plan.feature:franchise_management` — the first route in the codebase to actually attach `EnforcePlanFeature`, which had been built ahead of demand in Phase 3.A.
+- Every read is a deliberate cross-tenant query written as an explicit `withoutTenantScope()` call, with group membership as the authorisation boundary — Decision D-13's rule is that a bypass must be visible at its call site. `FranchiseGroup` itself is tenant-scoped, so a franchisor can only ever address a group it owns.
+- The membership column is `member_tenant_id`, not `tenant_id`, and `FranchiseGroupMember` does not use `BelongsToTenant` — see Decision D-23.
+- The consolidated view reports store and staff counts only. Try-on and revenue columns are **absent rather than zeroed**, because `try_on_sessions` does not exist until Phase 6.
+
+*Addresses (`App\Services\Store\SubdomainService`, `App\Services\Store\CustomDomainService`)*
+- Assigning a subdomain writes `tenants.subdomain` and `tenants.slug` together — `ResolveTenant` matches the host against `slug`, so writing one without the other would produce a displayed address that does not resolve.
+- Custom domains are proved by a DNS TXT challenge before `tenants.custom_domain` is ever populated, so an unverified claim on someone else's domain is inert. The token survives retries, "not propagated yet" is a success response rather than an error, and the exact record to publish is served by the API rather than rebuilt in the dashboard.
+- The lookup goes through the `DnsResolver` interface so verification is testable without depending on real propagation.
+
+**Deliberately not built in Phase 4, with reasons:**
+- *Staff performance aggregation and its report page.* Every metric the spec names — try-ons handled, sessions, conversions — depends on `try_on_sessions`, which Phase 6 creates. Building it against staff and shift counts alone would report numbers that look like performance data but measure nothing of the kind.
+- *Inter-branch stock availability and its widget.* Blocked on Phase 5's `products` / `product_variants` / inventory tables. Same pattern as tenant provisioning in Phase 2.A.
+
+**Frontend (Phase 4.B):** `apps/dashboard/src/pages/stores/` (list, create/edit with map picker and branding crop, hours editor, kiosk devices, shift scheduler), `apps/dashboard/src/pages/settings/DomainSettingsPage.tsx`, and the kiosk app's own pairing screen at `apps/kiosk/src/pages/KioskPairingPage.tsx`. Two component choices worth knowing: the map picker extracts coordinates from a pasted Google Maps link and offers browser geolocation rather than embedding a paid tile layer, and the branding cropper is a small canvas component rather than a dependency, so the *cropped* image is what gets uploaded and a 12 MP phone photo never touches the tenant's storage quota.
 
 ## 8.7 Analytics & BI
 
@@ -1962,7 +2366,27 @@ Choosing Free/Pro/Max, monthly vs yearly (20% off), applying a promo code, and p
 Your account enters **pending approval**. You will receive an email and SMS when the FitMirror team approves it — typically within business hours. Nothing else is required from you in the meantime.
 
 ## 11.3 Setting Up Your Store
-Store profile (logo, banner, address, contact, Google Map, social links), opening hours, and additional branches if your plan allows.
+
+**Your branches.** Go to **Branches** in the sidebar. Your plan decides how many you can run — Free 1, Pro 3, Max unlimited — and the page shows how many you have used against that number, so **Add branch** tells you *before* you fill anything in if you are at the limit.
+
+For each branch, fill in:
+- **Name and code.** The code is a short identifier you choose (`DHK-01`) shown on receipts and kiosk screens. It has to be unique within your account, but two different shops on FitMirror can happily use the same one.
+- **Contact and address.** Phone, email, street, city, area.
+- **Map location.** Paste the share link from Google Maps and the coordinates fill in automatically. Standing in the shop, you can instead tap **Use my location**.
+- **Social links.** Facebook, Instagram, TikTok, YouTube, WhatsApp, website. These appear on the kiosk.
+- **Status.** *Active* is normal. *Temporarily inactive* stops the kiosks but still uses one of your plan's branch slots. *Permanently closed* keeps all the branch's history but frees the slot — use this when you relocate a shop.
+
+Your first branch is automatically your **main** branch. To change that later, open another branch and tick **Make this the main branch**; the previous one steps down on its own.
+
+**Branding.** Once a branch is saved, a **Branding** section appears at the bottom of its page. Upload a square **logo** and a wide **banner** — you can drag and zoom to crop each one before it uploads, so a photo straight off your phone is fine.
+
+**Opening hours.** From the Branches list, click **Hours** on a branch. Set each day's opening and closing time, or mark the day closed. Set one day the way you want it and click **Copy to all days** to apply it across the week.
+
+Each day also has an optional **kiosk window** — a narrower stretch during which the kiosk may run, useful when it should only operate while a staff member is on the floor. Leave those blank and the kiosk runs whenever the shop is open. Hours that close earlier than they open (18:00 → 02:00) are understood as running past midnight. A banner at the top of the page tells you whether your kiosks can run *right now*, and when they next open if not.
+
+**Your shop's address on the web.** Under **Settings → Shop address**, choose your FitMirror address (`yourshop.fitmirror.com`) — availability is checked as you type. On the Max plan you can also connect a domain you already own; see §11.12.
+
+**Staff rosters.** Under **Schedule**, a weekly grid shows every staff member against every day. Hover a cell and click **+ Add** to roster someone, or drag an existing shift onto another day or another person to move it. A shift that ends earlier than it starts (22:00 → 06:00) is an overnight shift, and FitMirror will not let you double-book the same person — including across midnight.
 
 ## 11.4 Adding Categories
 Building your category tree (Boys → Panjabi/Shirt/T-shirt/Pant/Coat/Jacket, Girls → Saree/Threepiece/Kurti/Orna, and so on) within your plan's category limit.
@@ -1971,7 +2395,7 @@ Building your category tree (Boys → Panjabi/Shirt/T-shirt/Pant/Coat/Jacket, Gi
 Single product upload with variants, colors, sizes, prices, stock, and images; bulk upload of hundreds of products from an Excel/CSV template; what "AR-ready" means and how to fix a product whose background removal did not come out clean.
 
 ## 11.6 Configuring the Kiosk
-Pairing a device, setting display language and idle timeout, choosing the screensaver playlist, and setting kiosk active hours.
+Pairing a device, setting display language and idle timeout, choosing the screensaver playlist, and setting kiosk active hours — all covered step by step in **§12 Kiosk Setup Guide**, which is written to be followed while standing at the device.
 
 ## 11.7 Launching a Campaign
 Picking a campaign type, starting from a template, designing with the drag-and-drop builder, selecting products and discounts, targeting an audience, choosing channels, scheduling, and reading the results.
@@ -1988,11 +2412,31 @@ Inviting staff, choosing between Manager and Staff roles, understanding what eac
 ## 11.11 Billing & Plan Changes
 Viewing invoices, upgrading or downgrading (with proration), buying SMS or storage add-ons, and managing auto-renewal.
 
+## 11.12 Using Your Own Domain (Max plan)
+
+Your shop is always reachable at your FitMirror address. On the Max plan you can serve it from a domain you own as well.
+
+1. Go to **Settings → Shop address**. Under **Your own domain**, enter the hostname — `shop.yourbrand.com`. Pasting the full URL works too.
+2. Click **Connect domain**. FitMirror shows you the exact DNS record to create:
+
+   | Field | Value |
+   |---|---|
+   | Type | `TXT` |
+   | Name | `_fitmirror-verification.shop.yourbrand.com` |
+   | Value | the token shown on screen |
+   | TTL | `300` |
+
+3. Add that record in your DNS provider's control panel. Some providers add your domain to the name automatically — if the panel already shows `.yourbrand.com` after the field, enter only `_fitmirror-verification.shop`.
+4. Come back and click **Check DNS now**. If the record has not spread across the internet yet, FitMirror says so and you can simply try again — nothing is lost, and the token stays the same, so you never have to re-paste it. DNS changes usually take a few minutes but can take up to 24 hours.
+5. Once it verifies, your shop starts answering on that domain. Your FitMirror address keeps working too.
+
+**Disconnect** removes the domain and stops serving it. Note that a domain can only be connected to one FitMirror account at a time — if someone else has already claimed it, you will be told when you try to add it.
+
 ---
 
 # 12. Kiosk Setup Guide
 
-_Populated with real screens as Phase 6 completes. Outline and hardware guidance below._
+_Hardware, pairing, display settings and daily operation are real as of Phase 4. Positioning and calibration (§12.6) wait on Phase 6's render pipeline._
 
 ## 12.1 Hardware Needed
 - A tablet (10" or larger) or a laptop/all-in-one PC — see Section 2.5 for specifications
@@ -2003,23 +2447,74 @@ _Populated with real screens as Phase 6 completes. Outline and hardware guidance
 - Optional: a floor marker showing the customer where to stand
 
 ## 12.2 Opening the Kiosk App
-Navigating to the kiosk URL in Chrome/Edge, launching in kiosk/fullscreen mode, and the Android/Windows launcher options for a locked-down device.
+The kiosk is a normal web app — there is nothing to install.
+
+1. On the device, open **Chrome** or **Edge** and go to the kiosk URL:
+   - Production: `https://kiosk.fitmirror.com`
+   - Local development: `http://localhost:5174`
+2. Put the browser in fullscreen/kiosk mode so staff and customers cannot navigate away:
+   - **Windows:** create a shortcut to
+     `"C:\Program Files\Google\Chrome\Application\chrome.exe" --kiosk --app=https://kiosk.fitmirror.com`
+     and add it to `shell:startup` so it launches on boot.
+   - **Android tablet:** open the URL in Chrome, tap **⋮ → Add to Home screen**, then launch from that icon. For a fully locked-down device, use Android's Screen Pinning (Settings → Security → Screen pinning).
+   - **Any browser, quick version:** press `F11`.
+
+The device remembers its pairing across restarts, so this only has to be done once per device.
 
 ## 12.3 Connecting the Kiosk to Your Store
-Generating a pairing code from Dashboard → Kiosk Devices, entering it on the kiosk screen, and confirming the device shows as connected with a live heartbeat.
+Pairing is a one-time, two-screen operation. The code is valid for **15 minutes** and works **once**.
+
+**On your dashboard, on any computer or phone:**
+1. Go to **Branches** and open the branch this kiosk belongs to.
+2. Click **Kiosks** on that branch's row (or go to Branches → the branch → Kiosks).
+3. Click **Pair a device**.
+4. Give the device a name a staff member would recognise on the shop floor — "Front Desk", "Fitting Room A".
+5. Click **Get pairing code**. An 8-character code appears, with a countdown.
+
+**On the kiosk itself:**
+6. The unpaired kiosk shows a **Pair this kiosk** screen with eight boxes.
+7. Type the code. The letters `I`, `O`, `0` and `1` are never used in a code, so there is nothing to confuse — and a lowercase or pasted code is accepted too.
+8. Tap **Pair kiosk**.
+
+**Back on the dashboard:** the pairing window updates on its own — no refresh needed — to *"Paired. This kiosk is now connected to your branch."* Click **Done**. The device now appears in the kiosk list with a green dot and a **Last seen** time that updates every minute.
+
+**If the code expires** before you get to the kiosk, close the window and click **Show pairing code** on that device's row for a fresh one. Generating a new code invalidates the old one.
+
+**If you need to move a kiosk to different hardware,** click **Unpair** on its row. That immediately stops the old device from working and issues a fresh code, while keeping the device's name, settings and history.
 
 ## 12.4 Granting Camera Permission
-Allowing camera access on first launch, making the permission persistent, and what to do if the browser blocks it.
+1. On first launch the browser asks for camera access — tap **Allow**.
+2. Make it permanent so an unattended kiosk never sits on a permission prompt:
+   - **Chrome/Edge:** click the padlock in the address bar → **Site settings** → **Camera → Allow**.
+   - Or pre-approve at launch with `--use-fake-ui-for-media-stream` omitted and the site added under `chrome://settings/content/camera`.
+3. The kiosk reports camera status on every heartbeat. If it is blocked or unplugged, the device's row in your dashboard shows **Camera unavailable** under Health — so you find out before a customer does.
 
 ## 12.5 Display Settings
-Language (বাংলা/English), theme and branding, idle timeout before screensaver, screensaver playlist, which categories appear, and the exit PIN for staff.
+Change these any time from **Branches → the branch → Kiosks → Settings** on the device's row. A saved change reaches an unattended kiosk on its next check-in — **within one minute**, with nobody touching the device.
+
+| Setting | Options | What it does |
+|---|---|---|
+| Language | বাংলা / English | The kiosk's interface language |
+| Theme | Light / Dark | Match the shop's lighting — dark reads better in a dim showroom |
+| Idle timeout | 15–1800 seconds | How long the kiosk waits after the last touch before returning to the attract screen |
+| Screensaver playlist | One image or video URL per line | Shown while the kiosk is idle |
+| Show branding | On / Off | Whether this branch's logo and banner appear on the kiosk |
+| Attract loop | On / Off | Whether the playlist plays when idle |
 
 ## 12.6 Positioning & Calibration
-Camera height and distance, framing a full upper body, verifying pose detection quality, and a quick test with two people for couple try-on.
+Camera height and distance, framing a full upper body, verifying pose detection quality, and a quick test with two people for couple try-on. _Populated in Phase 6, when the render pipeline exists to calibrate against._
 
 ## 12.7 Daily Operation
-Opening and closing the kiosk with store hours, what staff should do when a customer approaches, and how to help a customer send a snapshot to their phone.
 
+**Opening hours.** Set them once per branch under **Branches → the branch → Hours**. Each day has the shop's own trading hours and, optionally, a narrower **kiosk window** — useful when the kiosk should only run while a staff member is on the floor. Leave the kiosk times blank and it runs whenever the shop is open. A window that closes earlier than it opens (18:00 → 02:00) is understood as running past midnight.
+
+Outside its window the kiosk shows a **"We're closed"** screen with the next opening time, and starts serving again on its own when the window opens — nobody needs to touch it at either end of the day. A branch with no hours configured at all runs its kiosks around the clock.
+
+**Is it working?** The kiosk list shows a green dot and a **Last seen** time for every device. A device is marked offline after two missed check-ins (about two minutes). A kiosk that is closed for the night still checks in, so "offline" always means a real problem — a device switched off, unplugged, or off the network.
+
+**Taking a kiosk out of service temporarily.** Click **Suspend** on its row. It stops working immediately but keeps its pairing, so **Reactivate** brings it straight back with no trip to the shop floor. Use **Unpair** only when the hardware itself is changing.
+
+**When staff should step in.** Greet the customer, point out the floor marker, and stay within reach for the first try-on. Helping a customer send a snapshot to their phone is covered in Phase 6 once that flow exists.
 ---
 
 # 13. Troubleshooting
@@ -2175,6 +2670,27 @@ _Version history, updated at every release. Follows [Semantic Versioning](https:
 ## [Unreleased]
 
 ### Added
+- **Phase 4 — Store, Branch & Staff Management.** `stores`, `store_hours`, `kiosk_devices`, `shifts`, `franchise_groups`/`franchise_group_members` and `custom_domain_requests` tables with their models, services, policies and factories (§6.3)
+- Branch CRUD with plan `branches`-limit enforcement, one-main-branch invariant, and logo/banner upload on the tenant disk (§7.6)
+- Weekly opening hours with an optional narrower kiosk-active window, overnight-window handling, and per-branch timezone evaluation (§7.6)
+- Full kiosk device lifecycle — register, short-lived pairing code, claim for a long-lived device token, heartbeat with health reporting, display settings, suspend/reactivate, remote unpair (§7.6, §12.3)
+- `AuthenticateKioskDevice` middleware (alias `kiosk.auth`) and `KioskContext` — device-token authentication for a non-user principal (Decision D-21)
+- `EnsureKioskWithinActiveHours` middleware (alias `kiosk.hours`) guarding kiosk session authorization
+- Staff shift rostering with overlap detection across midnight and a bounded date-range schedule listing (§7.6)
+- Franchise consolidated roll-up across member tenants, gated by the new `franchise_management` plan feature (§7.6, §8.6)
+- Subdomain assignment/availability API, and custom domain request + DNS TXT verification gated by the new `custom_domain` plan feature (§7.6, §11.12)
+- `App\Support\Dns\DnsResolver` interface with `SystemDnsResolver`, so domain verification is testable without real propagation
+- Dashboard: branch list, create/edit form with map-link coordinate extraction, branding cropper, hours editor, kiosk devices page with live-polling pairing modal, kiosk display settings, weekly drag-to-move shift scheduler, and a shop-address/custom-domain settings page (§8.6)
+- Kiosk app: pairing screen, device-token storage, heartbeat loop with camera health probing, and an out-of-hours "we're closed" screen (§12)
+- `franchise_management` and `custom_domain` plan features seeded (Max only) — `PlanSeeder` is idempotent, so re-running it is the whole upgrade step
+- §12 Kiosk Setup Guide rewritten with the real pairing, permission, settings and daily-operation steps
+- §11.3 and §11.12 subscriber guidance for branches, hours, rosters and custom domains
+- Decisions D-20 to D-23 recorded in PROGRESS.md
+
+### Fixed
+- **Stale auth guards leaked one request's authenticated user into the next.** `AuthManager` memoises guards for the container's lifetime and Sanctum's `RequestGuard` caches its resolved user on top, which `setRequest()` never clears — two sequential requests with different bearer tokens both resolved to the first token's user. `GET /auth/me` returned the wrong account and `GET /staff` returned an empty list. Fixed by prepending `ForgetStaleAuthGuards` to the `api` group (Decision D-20)
+- **Policy denials returned the wrong error code.** Laravel's handler rewraps every `AuthorizationException` into an `AccessDeniedHttpException` *before* the render callbacks run, so `ApiExceptionRenderer`'s `AuthorizationException` arm was unreachable and every `$this->authorize()` failure came back as `http_error` instead of `unauthorized`. Latent since Phase 2.C (Decision D-22)
+- `config('app.tenant_default_timezone')` now exists — `TENANT_DEFAULT_TIMEZONE` had shipped in `.env.example` since Phase 1.A without ever being exposed through a config file, so reading it would have broken under `config:cache`
 - `PROGRESS.md` — full 827-task build checklist across 16 phases
 - `DOCUMENTATION.md` — this document, structured and ready to fill
 - Development toolchain verified: PHP 8.2.12 (TS x64) and Composer 2.10.2

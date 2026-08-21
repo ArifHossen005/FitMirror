@@ -45,6 +45,8 @@ class PlanSeeder extends Seeder
                 'custom_branding' => [false, null],
                 'api_access' => [false, null],
                 'sslcommerz_payment' => [false, null],
+                'franchise_management' => [false, null],
+                'custom_domain' => [false, null],
             ],
         );
 
@@ -70,6 +72,8 @@ class PlanSeeder extends Seeder
                 'custom_branding' => [true, 'logo'],
                 'api_access' => [false, null],
                 'sslcommerz_payment' => [true, null],
+                'franchise_management' => [false, null],
+                'custom_domain' => [false, null],
             ],
         );
 
@@ -95,6 +99,8 @@ class PlanSeeder extends Seeder
                 'custom_branding' => [true, 'white_label'],
                 'api_access' => [true, null],
                 'sslcommerz_payment' => [true, null],
+                'franchise_management' => [true, 'consolidated'],
+                'custom_domain' => [true, null],
             ],
         );
     }

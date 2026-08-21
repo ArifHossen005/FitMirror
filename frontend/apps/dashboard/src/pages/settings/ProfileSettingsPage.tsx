@@ -24,6 +24,14 @@ export function ProfileSettingsPage() {
           </Link>
         </div>
       </div>
+      <div>
+        <h2 className="text-base font-semibold text-neutral-900">Shop</h2>
+        <div className="mt-2 flex flex-col gap-2 text-sm">
+          <Link to="/settings/domain" className="text-brand-600 hover:underline">
+            Shop address and custom domain
+          </Link>
+        </div>
+      </div>
     </div>
   );
 }

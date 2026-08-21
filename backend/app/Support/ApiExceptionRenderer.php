@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
@@ -45,7 +46,19 @@ class ApiExceptionRenderer
                 Response::HTTP_UNAUTHORIZED,
                 errorCode: 'unauthenticated',
             ),
-            $e instanceof AuthorizationException => ApiResponse::error(
+            // Both forms are handled deliberately. Laravel's handler runs
+            // prepareException() *before* these render callbacks, and that
+            // step rewraps every AuthorizationException — including the one
+            // every $this->authorize() call throws — into an
+            // AccessDeniedHttpException. Without this second arm those
+            // denials fell through to the generic HttpExceptionInterface
+            // branch below and came back as `http_error` with a generic
+            // message, so the `unauthorized` code the API contract promises
+            // (DOCUMENTATION.md 7.1) was never actually emitted for a
+            // policy failure. The bare AuthorizationException arm still
+            // matters for anything thrown after preparation, e.g. inside a
+            // response macro or a terminating callback.
+            $e instanceof AuthorizationException, $e instanceof AccessDeniedHttpException => ApiResponse::error(
                 trans('common.unauthorized'),
                 Response::HTTP_FORBIDDEN,
                 errorCode: 'unauthorized',

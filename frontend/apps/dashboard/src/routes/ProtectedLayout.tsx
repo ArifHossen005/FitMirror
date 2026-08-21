@@ -13,7 +13,9 @@ interface GatedNavItem extends AppShellNavItem {
 
 const NAV_ITEMS: GatedNavItem[] = [
   { label: 'Dashboard', to: '/', end: true },
+  { label: 'Branches', to: '/stores', permission: 'stores.view' },
   { label: 'Team', to: '/staff', permission: 'staff.view' },
+  { label: 'Schedule', to: '/schedule', permission: 'staff.view' },
   { label: 'Billing', to: '/billing', permission: 'billing.view' },
   { label: 'Activity Log', to: '/audit-log', permission: 'audit_log.view' },
   { label: 'Settings', to: '/settings' },

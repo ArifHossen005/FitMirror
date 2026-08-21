@@ -18,6 +18,8 @@ use App\Http\Controllers\Api\V1\Billing\BillingHistoryController;
 use App\Http\Controllers\Api\V1\Billing\CouponPreviewController;
 use App\Http\Controllers\Api\V1\Billing\InvoiceController;
 use App\Http\Controllers\Api\V1\HealthController;
+use App\Http\Controllers\Api\V1\Kiosk\KioskDeviceController;
+use App\Http\Controllers\Api\V1\Kiosk\KioskSessionController;
 use App\Http\Controllers\Api\V1\Payment\PaymentCancelCallbackController;
 use App\Http\Controllers\Api\V1\Payment\PaymentFailCallbackController;
 use App\Http\Controllers\Api\V1\Payment\PaymentInitiateController;
@@ -29,9 +31,15 @@ use App\Http\Controllers\Api\V1\Staff\AuditLogController;
 use App\Http\Controllers\Api\V1\Staff\InviteAcceptController;
 use App\Http\Controllers\Api\V1\Staff\StaffController;
 use App\Http\Controllers\Api\V1\Staff\StaffInvitationController;
+use App\Http\Controllers\Api\V1\Store\FranchiseGroupController;
+use App\Http\Controllers\Api\V1\Store\ShiftController;
+use App\Http\Controllers\Api\V1\Store\StoreController;
+use App\Http\Controllers\Api\V1\Store\StoreHoursController;
 use App\Http\Controllers\Api\V1\Subscription\AutoRenewController;
 use App\Http\Controllers\Api\V1\Subscription\CancelSubscriptionController;
 use App\Http\Controllers\Api\V1\Subscription\CurrentSubscriptionController;
+use App\Http\Controllers\Api\V1\Tenant\CustomDomainController;
+use App\Http\Controllers\Api\V1\Tenant\SubdomainController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -194,4 +202,166 @@ Route::middleware(['auth:sanctum', 'tenant.2fa'])->group(function () {
     // — a coupon is applied *during* the first checkout, before the tenant
     // is active.
     Route::post('/billing/coupon/preview', CouponPreviewController::class)->name('billing.coupon.preview');
+});
+
+/*
+|--------------------------------------------------------------------------
+| Store, Branch & Staff Management (Phase 4.A)
+|--------------------------------------------------------------------------
+|
+| Same guard stack as the tenant business routes above — an authenticated
+| user, an active tenant, and (for the literal owner) 2FA. Kept in its own
+| group purely for readability; there is no middleware difference.
+|
+| The franchise and custom-domain routes add `plan.feature:*` on top, which
+| is the first time EnforcePlanFeature is attached to a real route since it
+| was built ahead of demand in Phase 3.A.
+|
+*/
+Route::middleware(['auth:sanctum', 'tenant.active', 'tenant.2fa'])->group(function () {
+    Route::prefix('stores')->group(function () {
+        Route::get('/', [StoreController::class, 'index'])->name('stores.index');
+        Route::post('/', [StoreController::class, 'store'])->name('stores.store');
+        Route::get('/{store}', [StoreController::class, 'show'])->whereNumber('store')->name('stores.show');
+        Route::patch('/{store}', [StoreController::class, 'update'])->whereNumber('store')->name('stores.update');
+        // POST, not PATCH: PHP only parses a multipart body on POST, so a
+        // multipart PATCH arrives with no uploaded files at all. See
+        // StoreBrandingRequest's own docblock.
+        Route::post('/{store}/branding', [StoreController::class, 'branding'])
+            ->whereNumber('store')
+            ->name('stores.branding');
+        Route::delete('/{store}', [StoreController::class, 'destroy'])->whereNumber('store')->name('stores.destroy');
+
+        Route::get('/{store}/hours', [StoreHoursController::class, 'show'])
+            ->whereNumber('store')
+            ->name('stores.hours.show');
+        Route::put('/{store}/hours', [StoreHoursController::class, 'update'])
+            ->whereNumber('store')
+            ->name('stores.hours.update');
+
+        Route::get('/{store}/kiosk-devices', [KioskDeviceController::class, 'index'])
+            ->whereNumber('store')
+            ->name('stores.kiosk-devices.index');
+        Route::post('/{store}/kiosk-devices', [KioskDeviceController::class, 'store'])
+            ->whereNumber('store')
+            ->name('stores.kiosk-devices.store');
+
+        Route::post('/{store}/shifts', [ShiftController::class, 'store'])
+            ->whereNumber('store')
+            ->name('stores.shifts.store');
+    });
+
+    Route::prefix('kiosk-devices')->group(function () {
+        Route::get('/{device}', [KioskDeviceController::class, 'show'])
+            ->whereNumber('device')
+            ->name('kiosk-devices.show');
+        Route::post('/{device}/pairing-code', [KioskDeviceController::class, 'pairingCode'])
+            ->whereNumber('device')
+            ->name('kiosk-devices.pairing-code');
+        Route::post('/{device}/unpair', [KioskDeviceController::class, 'unpair'])
+            ->whereNumber('device')
+            ->name('kiosk-devices.unpair');
+        Route::post('/{device}/suspend', [KioskDeviceController::class, 'suspend'])
+            ->whereNumber('device')
+            ->name('kiosk-devices.suspend');
+        Route::post('/{device}/reactivate', [KioskDeviceController::class, 'reactivate'])
+            ->whereNumber('device')
+            ->name('kiosk-devices.reactivate');
+        Route::get('/{device}/settings', [KioskDeviceController::class, 'settings'])
+            ->whereNumber('device')
+            ->name('kiosk-devices.settings.show');
+        Route::put('/{device}/settings', [KioskDeviceController::class, 'updateSettings'])
+            ->whereNumber('device')
+            ->name('kiosk-devices.settings.update');
+        Route::delete('/{device}', [KioskDeviceController::class, 'destroy'])
+            ->whereNumber('device')
+            ->name('kiosk-devices.destroy');
+    });
+
+    Route::prefix('shifts')->group(function () {
+        Route::get('/schedule', [ShiftController::class, 'schedule'])->name('shifts.schedule');
+        Route::patch('/{shift}', [ShiftController::class, 'update'])->whereNumber('shift')->name('shifts.update');
+        Route::post('/{shift}/cancel', [ShiftController::class, 'cancel'])
+            ->whereNumber('shift')
+            ->name('shifts.cancel');
+        Route::delete('/{shift}', [ShiftController::class, 'destroy'])
+            ->whereNumber('shift')
+            ->name('shifts.destroy');
+    });
+
+    Route::prefix('tenant')->group(function () {
+        Route::get('/subdomain', [SubdomainController::class, 'show'])->name('tenant.subdomain.show');
+        Route::get('/subdomain/check', [SubdomainController::class, 'check'])
+            ->middleware('throttle:tenant')
+            ->name('tenant.subdomain.check');
+        Route::post('/subdomain', [SubdomainController::class, 'assign'])->name('tenant.subdomain.assign');
+
+        Route::middleware('plan.feature:custom_domain')->group(function () {
+            Route::get('/custom-domain', [CustomDomainController::class, 'show'])
+                ->name('tenant.custom-domain.show');
+            Route::post('/custom-domain', [CustomDomainController::class, 'store'])
+                ->name('tenant.custom-domain.store');
+            Route::post('/custom-domain/verify', [CustomDomainController::class, 'verify'])
+                ->name('tenant.custom-domain.verify');
+            Route::delete('/custom-domain', [CustomDomainController::class, 'destroy'])
+                ->name('tenant.custom-domain.destroy');
+        });
+    });
+
+    Route::middleware('plan.feature:franchise_management')
+        ->prefix('franchise-groups')
+        ->group(function () {
+            Route::get('/', [FranchiseGroupController::class, 'index'])->name('franchise-groups.index');
+            Route::post('/', [FranchiseGroupController::class, 'store'])->name('franchise-groups.store');
+            Route::get('/{group}/overview', [FranchiseGroupController::class, 'overview'])
+                ->whereNumber('group')
+                ->name('franchise-groups.overview');
+            Route::post('/{group}/members', [FranchiseGroupController::class, 'addMember'])
+                ->whereNumber('group')
+                ->name('franchise-groups.members.store');
+            Route::delete('/{group}/members/{memberTenantId}', [FranchiseGroupController::class, 'removeMember'])
+                ->whereNumber('group')
+                ->whereNumber('memberTenantId')
+                ->name('franchise-groups.members.destroy');
+            Route::delete('/{group}', [FranchiseGroupController::class, 'destroy'])
+                ->whereNumber('group')
+                ->name('franchise-groups.destroy');
+        });
+});
+
+/*
+|--------------------------------------------------------------------------
+| Kiosk Device API (Phase 4.A)
+|--------------------------------------------------------------------------
+|
+| Authenticated by device token, not by a user session — see
+| App\Http\Middleware\AuthenticateKioskDevice for why this is deliberately
+| not Sanctum. Rate-limited by the 'kiosk' limiter defined back in Phase
+| 1.A (AppServiceProvider::configureRateLimiters()), which keys on the
+| bearer token rather than a user id; this is the first route group to
+| actually use it.
+|
+| /kiosk/claim is the only unauthenticated route here — it is how a device
+| obtains its token in the first place. It carries the stricter 'auth'
+| limiter on top, since an unauthenticated endpoint that resolves a short
+| code is exactly the shape that needs brute-force protection.
+|
+*/
+Route::prefix('kiosk')->middleware('throttle:kiosk')->group(function () {
+    Route::post('/claim', [KioskSessionController::class, 'claim'])
+        ->middleware('throttle:auth')
+        ->name('kiosk.claim');
+
+    Route::middleware('kiosk.auth')->group(function () {
+        Route::post('/heartbeat', [KioskSessionController::class, 'heartbeat'])->name('kiosk.heartbeat');
+        Route::get('/config', [KioskSessionController::class, 'config'])->name('kiosk.config');
+        Route::get('/availability', [KioskSessionController::class, 'availability'])->name('kiosk.availability');
+
+        // The one kiosk route behind the active-hours guard — see
+        // EnsureKioskWithinActiveHours for why the others deliberately are
+        // not.
+        Route::post('/sessions/authorize', [KioskSessionController::class, 'authorizeSession'])
+            ->middleware('kiosk.hours')
+            ->name('kiosk.sessions.authorize');
+    });
 });

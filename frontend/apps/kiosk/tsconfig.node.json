@@ -5,6 +5,9 @@
     "lib": ["ES2023"],
     "types": ["node"],
     "skipLibCheck": true,
+    /* vite.config.ts imports package.json to stamp the build version into
+       __APP_VERSION__, which the kiosk reports on every heartbeat. */
+    "resolveJsonModule": true,
 
     /* Bundler mode */
     "module": "nodenext",

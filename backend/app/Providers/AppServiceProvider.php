@@ -4,6 +4,9 @@ namespace App\Providers;
 
 use App\Auth\TenantUnawareUserProvider;
 use App\Models\PersonalAccessToken;
+use App\Support\Dns\DnsResolver;
+use App\Support\Dns\SystemDnsResolver;
+use App\Support\KioskContext;
 use App\Support\TenantContext;
 use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Cache\RateLimiting\Limit;
@@ -35,6 +38,18 @@ class AppServiceProvider extends ServiceProvider
         // query (TenantScope) must see that same instance. See
         // TenantContext's own docblock for the queue-worker caveat.
         $this->app->singleton(TenantContext::class);
+
+        // Same singleton reasoning as TenantContext above:
+        // AuthenticateKioskDevice sets it once per request and the kiosk
+        // controllers read that same instance. See KioskContext's own
+        // docblock for the queue-worker caveat it inherits.
+        $this->app->singleton(KioskContext::class);
+
+        // Custom-domain verification's only seam to the outside world.
+        // Bound to the interface so tests can swap in a fake resolver
+        // instead of depending on real, propagation-delayed DNS — see
+        // App\Support\Dns\DnsResolver.
+        $this->app->bind(DnsResolver::class, SystemDnsResolver::class);
     }
 
     /**

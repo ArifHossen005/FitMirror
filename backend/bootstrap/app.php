@@ -1,9 +1,12 @@
 <?php
 
+use App\Http\Middleware\AuthenticateKioskDevice;
 use App\Http\Middleware\EnforcePlanFeature;
+use App\Http\Middleware\EnsureKioskWithinActiveHours;
 use App\Http\Middleware\EnsureSuperAdmin;
 use App\Http\Middleware\EnsureTenantIsActive;
 use App\Http\Middleware\EnsureTwoFactorIsEnabled;
+use App\Http\Middleware\ForgetStaleAuthGuards;
 use App\Http\Middleware\ResolveLocale;
 use App\Http\Middleware\ResolveTenant;
 use App\Support\ApiExceptionRenderer;
@@ -40,7 +43,12 @@ return Application::configure(basePath: dirname(__DIR__))
         // 'kiosk' are attached per-route with ->middleware('throttle:auth').
         $middleware->throttleApi('api');
 
+        // Order matters. ForgetStaleAuthGuards must run before anything
+        // reads an authenticated principal — see its own docblock and
+        // Decision D-20; ResolveTenant then resolves the tenant from this
+        // request's own bearer token.
         $middleware->api(prepend: [
+            ForgetStaleAuthGuards::class,
             ResolveLocale::class,
             ResolveTenant::class,
         ]);
@@ -50,6 +58,13 @@ return Application::configure(basePath: dirname(__DIR__))
             'tenant.active' => EnsureTenantIsActive::class,
             'tenant.2fa' => EnsureTwoFactorIsEnabled::class,
             'plan.feature' => EnforcePlanFeature::class,
+            // Kiosk devices authenticate by device token, not by user
+            // session — see AuthenticateKioskDevice's docblock for why this
+            // is not a Sanctum guard. 'kiosk.hours' must come after
+            // 'kiosk.auth' in any route's stack; it reads the device that
+            // middleware resolved.
+            'kiosk.auth' => AuthenticateKioskDevice::class,
+            'kiosk.hours' => EnsureKioskWithinActiveHours::class,
         ]);
 
         // FitMirror is API-only — there is no web 'login' route to redirect

@@ -107,6 +107,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Tenant Presentation Timezone
+    |--------------------------------------------------------------------------
+    |
+    | Storage is always UTC (Decision D-07); this is the timezone a new
+    | branch is created in by default and the one dates are rendered in for
+    | a tenant that has not set their own. TENANT_DEFAULT_TIMEZONE has been
+    | in .env.example since Phase 1.A but was never exposed through config,
+    | so every read of it would have broken under `config:cache` — env() is
+    | only safe inside a config file.
+    |
+    */
+
+    'tenant_default_timezone' => env('TENANT_DEFAULT_TIMEZONE', 'Asia/Dhaka'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Dashboard Frontend URL
     |--------------------------------------------------------------------------
     |

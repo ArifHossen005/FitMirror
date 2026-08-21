@@ -16,11 +16,17 @@ import { PaymentResultPage } from '../pages/billing/PaymentResultPage';
 import { PricingPage } from '../pages/billing/PricingPage';
 import { DashboardHome } from '../pages/DashboardHome';
 import { NotFound } from '../pages/NotFound';
+import { DomainSettingsPage } from '../pages/settings/DomainSettingsPage';
 import { ProfileSettingsPage } from '../pages/settings/ProfileSettingsPage';
 import { SessionsPage } from '../pages/settings/SessionsPage';
 import { TwoFactorSetupPage } from '../pages/settings/TwoFactorSetupPage';
 import { AuditLogPage } from '../pages/staff/AuditLogPage';
 import { StaffListPage } from '../pages/staff/StaffListPage';
+import { KioskDevicesPage } from '../pages/stores/KioskDevicesPage';
+import { ShiftSchedulerPage } from '../pages/stores/ShiftSchedulerPage';
+import { StoreFormPage } from '../pages/stores/StoreFormPage';
+import { StoreHoursPage } from '../pages/stores/StoreHoursPage';
+import { StoreListPage } from '../pages/stores/StoreListPage';
 import { ProtectedLayout } from './ProtectedLayout';
 
 /**
@@ -56,6 +62,20 @@ export function AppRoutes() {
         <Route path="/settings" element={<ProfileSettingsPage />} />
         <Route path="/settings/two-factor" element={<TwoFactorSetupPage />} />
         <Route path="/settings/sessions" element={<SessionsPage />} />
+        <Route path="/settings/domain" element={<DomainSettingsPage />} />
+
+        {/*
+          "/stores/new" is declared before "/stores/:storeId" so the literal
+          segment wins — react-router ranks static segments above dynamic
+          ones, but keeping them adjacent and in this order makes the intent
+          readable rather than relying on the ranking rule.
+        */}
+        <Route path="/stores" element={<StoreListPage />} />
+        <Route path="/stores/new" element={<StoreFormPage />} />
+        <Route path="/stores/:storeId" element={<StoreFormPage />} />
+        <Route path="/stores/:storeId/hours" element={<StoreHoursPage />} />
+        <Route path="/stores/:storeId/kiosks" element={<KioskDevicesPage />} />
+        <Route path="/schedule" element={<ShiftSchedulerPage />} />
         <Route path="/billing" element={<BillingDashboardPage />} />
         <Route path="/billing/checkout" element={<CheckoutPage />} />
         <Route path="/billing/payment/:status" element={<PaymentResultPage />} />
