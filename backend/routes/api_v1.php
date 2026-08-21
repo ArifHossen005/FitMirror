@@ -17,9 +17,18 @@ use App\Http\Controllers\Api\V1\Billing\AddonController;
 use App\Http\Controllers\Api\V1\Billing\BillingHistoryController;
 use App\Http\Controllers\Api\V1\Billing\CouponPreviewController;
 use App\Http\Controllers\Api\V1\Billing\InvoiceController;
+use App\Http\Controllers\Api\V1\Catalog\AttributeController;
+use App\Http\Controllers\Api\V1\Catalog\AttributeValueController;
+use App\Http\Controllers\Api\V1\Catalog\CategoryController;
+use App\Http\Controllers\Api\V1\Catalog\OccasionController;
+use App\Http\Controllers\Api\V1\Catalog\TagController;
 use App\Http\Controllers\Api\V1\HealthController;
+use App\Http\Controllers\Api\V1\Inventory\InventoryReportController;
+use App\Http\Controllers\Api\V1\Inventory\StockController;
 use App\Http\Controllers\Api\V1\Kiosk\KioskDeviceController;
 use App\Http\Controllers\Api\V1\Kiosk\KioskSessionController;
+use App\Http\Controllers\Api\V1\Kiosk\SizeChartController as KioskSizeChartController;
+use App\Http\Controllers\Api\V1\Media\PresignedUploadController;
 use App\Http\Controllers\Api\V1\Payment\PaymentCancelCallbackController;
 use App\Http\Controllers\Api\V1\Payment\PaymentFailCallbackController;
 use App\Http\Controllers\Api\V1\Payment\PaymentInitiateController;
@@ -27,6 +36,10 @@ use App\Http\Controllers\Api\V1\Payment\PaymentIpnController;
 use App\Http\Controllers\Api\V1\Payment\PaymentSuccessCallbackController;
 use App\Http\Controllers\Api\V1\Plan\PlanListController;
 use App\Http\Controllers\Api\V1\Plan\PlanUsageController;
+use App\Http\Controllers\Api\V1\Product\PriceHistoryController;
+use App\Http\Controllers\Api\V1\Product\ProductController;
+use App\Http\Controllers\Api\V1\Product\ProductImageController;
+use App\Http\Controllers\Api\V1\Product\SizeChartController;
 use App\Http\Controllers\Api\V1\Staff\AuditLogController;
 use App\Http\Controllers\Api\V1\Staff\InviteAcceptController;
 use App\Http\Controllers\Api\V1\Staff\StaffController;
@@ -331,6 +344,139 @@ Route::middleware(['auth:sanctum', 'tenant.active', 'tenant.2fa'])->group(functi
 
 /*
 |--------------------------------------------------------------------------
+| Product & Catalog Management (Phase 5.A / 5.B)
+|--------------------------------------------------------------------------
+|
+| Same guard stack as every other tenant business route group. The
+| `/categories/reorder` route is registered before `/categories/{category}`
+| so "reorder" is never captured by the {category} parameter — the
+| whereNumber('category') constraint on that route would already prevent a
+| wrong match, but registration order is kept correct regardless since
+| that's the convention Laravel route matching relies on.
+|
+*/
+Route::middleware(['auth:sanctum', 'tenant.active', 'tenant.2fa'])->group(function () {
+    Route::prefix('categories')->group(function () {
+        Route::get('/', [CategoryController::class, 'index'])->name('categories.index');
+        Route::post('/', [CategoryController::class, 'store'])->name('categories.store');
+        Route::patch('/reorder', [CategoryController::class, 'reorder'])->name('categories.reorder');
+        Route::get('/{category}', [CategoryController::class, 'show'])->whereNumber('category')->name('categories.show');
+        Route::patch('/{category}', [CategoryController::class, 'update'])->whereNumber('category')->name('categories.update');
+        Route::delete('/{category}', [CategoryController::class, 'destroy'])->whereNumber('category')->name('categories.destroy');
+    });
+
+    Route::prefix('attributes')->group(function () {
+        Route::get('/', [AttributeController::class, 'index'])->name('attributes.index');
+        Route::post('/', [AttributeController::class, 'store'])->name('attributes.store');
+        Route::get('/{attribute}', [AttributeController::class, 'show'])->whereNumber('attribute')->name('attributes.show');
+        Route::patch('/{attribute}', [AttributeController::class, 'update'])->whereNumber('attribute')->name('attributes.update');
+        Route::delete('/{attribute}', [AttributeController::class, 'destroy'])->whereNumber('attribute')->name('attributes.destroy');
+
+        Route::post('/{attribute}/values', [AttributeValueController::class, 'store'])
+            ->whereNumber('attribute')
+            ->name('attributes.values.store');
+        Route::patch('/{attribute}/values/{value}', [AttributeValueController::class, 'update'])
+            ->whereNumber(['attribute', 'value'])
+            ->name('attributes.values.update');
+        Route::delete('/{attribute}/values/{value}', [AttributeValueController::class, 'destroy'])
+            ->whereNumber(['attribute', 'value'])
+            ->name('attributes.values.destroy');
+    });
+
+    Route::prefix('occasions')->group(function () {
+        Route::get('/', [OccasionController::class, 'index'])->name('occasions.index');
+        Route::post('/', [OccasionController::class, 'store'])->name('occasions.store');
+        Route::patch('/{occasion}', [OccasionController::class, 'update'])->whereNumber('occasion')->name('occasions.update');
+        Route::delete('/{occasion}', [OccasionController::class, 'destroy'])->whereNumber('occasion')->name('occasions.destroy');
+    });
+
+    Route::prefix('tags')->group(function () {
+        Route::get('/', [TagController::class, 'index'])->name('tags.index');
+        Route::post('/', [TagController::class, 'store'])->name('tags.store');
+        Route::patch('/{tag}', [TagController::class, 'update'])->whereNumber('tag')->name('tags.update');
+        Route::delete('/{tag}', [TagController::class, 'destroy'])->whereNumber('tag')->name('tags.destroy');
+    });
+
+    Route::prefix('size-charts')->group(function () {
+        Route::get('/', [SizeChartController::class, 'index'])->name('size-charts.index');
+        Route::post('/', [SizeChartController::class, 'store'])->name('size-charts.store');
+        Route::get('/{sizeChart}', [SizeChartController::class, 'show'])->whereNumber('sizeChart')->name('size-charts.show');
+        Route::patch('/{sizeChart}', [SizeChartController::class, 'update'])->whereNumber('sizeChart')->name('size-charts.update');
+        Route::delete('/{sizeChart}', [SizeChartController::class, 'destroy'])->whereNumber('sizeChart')->name('size-charts.destroy');
+    });
+
+    Route::prefix('products')->group(function () {
+        Route::get('/', [ProductController::class, 'index'])->name('products.index');
+        Route::post('/', [ProductController::class, 'store'])->name('products.store');
+        Route::get('/{product}', [ProductController::class, 'show'])->whereNumber('product')->name('products.show');
+        Route::patch('/{product}', [ProductController::class, 'update'])->whereNumber('product')->name('products.update');
+        Route::delete('/{product}', [ProductController::class, 'destroy'])->whereNumber('product')->name('products.destroy');
+        Route::post('/{product}/duplicate', [ProductController::class, 'duplicate'])
+            ->whereNumber('product')
+            ->name('products.duplicate');
+        Route::post('/{product}/publish', [ProductController::class, 'publish'])
+            ->whereNumber('product')
+            ->name('products.publish');
+        Route::post('/{product}/unpublish', [ProductController::class, 'unpublish'])
+            ->whereNumber('product')
+            ->name('products.unpublish');
+        Route::put('/{product}/tags', [ProductController::class, 'syncTags'])
+            ->whereNumber('product')
+            ->name('products.tags.sync');
+        Route::put('/{product}/occasions', [ProductController::class, 'syncOccasions'])
+            ->whereNumber('product')
+            ->name('products.occasions.sync');
+        Route::put('/{product}/size-charts', [SizeChartController::class, 'sync'])
+            ->whereNumber('product')
+            ->name('products.size-charts.sync');
+
+        Route::post('/{product}/images', [ProductImageController::class, 'store'])
+            ->whereNumber('product')
+            ->name('products.images.store');
+        Route::patch('/{product}/images/reorder', [ProductImageController::class, 'reorder'])
+            ->whereNumber('product')
+            ->name('products.images.reorder');
+        Route::delete('/{product}/images/{image}', [ProductImageController::class, 'destroy'])
+            ->whereNumber(['product', 'image'])
+            ->name('products.images.destroy');
+        Route::post('/{product}/images/{image}/remove-background', [ProductImageController::class, 'removeBackground'])
+            ->whereNumber(['product', 'image'])
+            ->name('products.images.remove-background');
+        Route::post('/{product}/tryon-asset', [ProductImageController::class, 'uploadTryonAsset'])
+            ->whereNumber('product')
+            ->name('products.tryon-asset.store');
+
+        Route::get('/{product}/price-history', [PriceHistoryController::class, 'index'])
+            ->whereNumber('product')
+            ->name('products.price-history.index');
+    });
+
+    Route::post('/media/presigned-upload', [PresignedUploadController::class, 'store'])
+        ->name('media.presigned-upload');
+
+    Route::prefix('variants')->group(function () {
+        Route::get('/{variant}/stock', [StockController::class, 'show'])
+            ->whereNumber('variant')
+            ->name('variants.stock.show');
+        Route::post('/{variant}/stock/adjust', [StockController::class, 'adjust'])
+            ->whereNumber('variant')
+            ->name('variants.stock.adjust');
+        Route::post('/{variant}/stock/transfer', [StockController::class, 'transfer'])
+            ->whereNumber('variant')
+            ->name('variants.stock.transfer');
+        Route::get('/{variant}/stock/movements', [StockController::class, 'movements'])
+            ->whereNumber('variant')
+            ->name('variants.stock.movements');
+        Route::patch('/{variant}/low-stock-threshold', [StockController::class, 'updateLowStockThreshold'])
+            ->whereNumber('variant')
+            ->name('variants.low-stock-threshold.update');
+    });
+
+    Route::get('/inventory/report', [InventoryReportController::class, 'report'])->name('inventory.report');
+});
+
+/*
+|--------------------------------------------------------------------------
 | Kiosk Device API (Phase 4.A)
 |--------------------------------------------------------------------------
 |
@@ -356,6 +502,12 @@ Route::prefix('kiosk')->middleware('throttle:kiosk')->group(function () {
         Route::post('/heartbeat', [KioskSessionController::class, 'heartbeat'])->name('kiosk.heartbeat');
         Route::get('/config', [KioskSessionController::class, 'config'])->name('kiosk.config');
         Route::get('/availability', [KioskSessionController::class, 'availability'])->name('kiosk.availability');
+
+        // Phase 5.B — the kiosk popup payload for a product's attached size
+        // charts. See Api\V1\Kiosk\SizeChartController's own docblock.
+        Route::get('/products/{product}/size-charts', [KioskSizeChartController::class, 'show'])
+            ->whereNumber('product')
+            ->name('kiosk.products.size-charts');
 
         // The one kiosk route behind the active-hours guard — see
         // EnsureKioskWithinActiveHours for why the others deliberately are

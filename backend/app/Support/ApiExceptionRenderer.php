@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Exceptions\InsufficientAddonBalanceException;
+use App\Exceptions\MediaProcessingException;
 use App\Exceptions\PaymentGatewayException;
 use App\Exceptions\PlanLimitExceededException;
 use Illuminate\Auth\Access\AuthorizationException;
@@ -39,6 +40,11 @@ class ApiExceptionRenderer
                 Response::HTTP_PAYMENT_REQUIRED,
                 errors: ['addon' => $e->addonCode, 'requested' => $e->requested, 'available' => $e->available],
                 errorCode: 'insufficient_addon_balance',
+            ),
+            $e instanceof MediaProcessingException => ApiResponse::error(
+                $e->getMessage(),
+                Response::HTTP_BAD_GATEWAY,
+                errorCode: 'media_processing_error',
             ),
             $e instanceof ValidationException => self::validation($e),
             $e instanceof AuthenticationException => ApiResponse::error(

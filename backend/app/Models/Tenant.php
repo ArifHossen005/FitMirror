@@ -33,6 +33,7 @@ class Tenant extends Model
         'trial_ends_at',
         'plan_id',
         'settings',
+        'storage_bytes_used',
     ];
 
     protected function casts(): array
@@ -41,6 +42,7 @@ class Tenant extends Model
             'status' => TenantStatus::class,
             'trial_ends_at' => 'datetime',
             'settings' => 'array',
+            'storage_bytes_used' => 'integer',
         ];
     }
 
@@ -80,6 +82,16 @@ class Tenant extends Model
     public function setting(string $key, mixed $default = null): mixed
     {
         return data_get($this->settings, $key, $default);
+    }
+
+    /**
+     * `storage_bytes_used` rounded up to whole gigabytes, so it can be
+     * compared directly against the plan's `storage_gb` limit — the same
+     * unit `PlanSeeder` seeds that key in.
+     */
+    public function storageUsedGb(): int
+    {
+        return (int) ceil($this->storage_bytes_used / 1_073_741_824);
     }
 
     public function getActivitylogOptions(): LogOptions

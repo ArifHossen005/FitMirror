@@ -1069,8 +1069,9 @@ _Every variable is added to this table as it is introduced. Values shown are exa
 | `SENTRY_TRACES_SAMPLE_RATE` | Performance trace sampling (0.0–1.0) | `0.2` | Production |
 | `SENTRY_PROFILES_SAMPLE_RATE` | Profiling sampling (0.0–1.0) | `0.0` | No |
 | `TELESCOPE_ENABLED` | Enable Telescope — only honoured in local/staging; `AppServiceProvider` never registers it in production regardless of this value | `true` | Yes |
-| `BG_REMOVAL_ENDPOINT` | Background removal service URL | `http://127.0.0.1:5000/remove` | Yes |
-| `BG_REMOVAL_KEY` | Background removal API key | `...` | No |
+| `BG_REMOVAL_ENDPOINT` | AI background-removal provider URL — assumed remove.bg-shaped contract, not yet verified against a real account (PROGRESS.md Decision D-27). Blank until then; `RemoveBackgroundJob` fails with a clear `MediaProcessingException` naming the missing var rather than sending a request nobody will answer | `https://api.remove.bg/v1.0/removebg` | No — only `POST .../remove-background` needs it |
+| `BG_REMOVAL_KEY` | Background-removal provider API key, sent as `X-Api-Key` | `...` | No |
+| `BG_REMOVAL_TIMEOUT_SECONDS` | HTTP timeout for the background-removal request | `30` | No — defaults to `30` |
 | `SUPER_ADMIN_NAME` | Seeded super admin display name | `Product Owner` | Yes |
 | `SUPER_ADMIN_EMAIL` | Seeded super admin email | `owner@fitmirror.com` | Yes |
 | `SUPER_ADMIN_PASSWORD` | Seeded super admin password. If left blank on the *first* seed run, `SuperAdminSeeder` generates one and prints it once — see §8.12. Re-running the seeder never overwrites an existing hash unless this is set. | `...` | Yes |
@@ -1355,6 +1356,268 @@ Purpose: a tenant's claim on their own domain, pending a DNS TXT challenge. `ten
 | `created_at` / `updated_at` | timestamp | Yes | null | |
 
 Indexes: unique on `domain`; composite `(tenant_id, status)`.
+
+---
+
+### `categories`
+Purpose: one node in the tenant's catalog taxonomy, self-referencing via `parent_id` to any depth. No nested-set/materialized-path package is installed — `App\Services\Catalog\CategoryService` walks the adjacency list in PHP (Decision D-24). The plan's `categories` limit counts every row regardless of status.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `parent_id` | bigint unsigned | Yes | null | FK → `categories.id`, `restrictOnDelete` — a category with children cannot be deleted (`CategoryService::delete()` checks first; the FK is the backstop) |
+| `name` | string | No | — | |
+| `slug` | string | No | — | Unique per tenant, auto-generated from `name` (`-2`, `-3`, … suffix on collision) |
+| `icon` | string | Yes | null | |
+| `image` | string | Yes | null | Relative path on the `tenant` disk |
+| `gender` | string | Yes | null | `App\Enums\CategoryGender` — `boys`, `girls`, `men`, `women`, `unisex` |
+| `sort_order` | int unsigned | No | `0` | |
+| `status` | string | No | `active` | `App\Enums\CategoryStatus` — `active`, `inactive` |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+| `deleted_at` | timestamp | Yes | null | Soft delete |
+
+Indexes: unique `(tenant_id, slug)`; composite `(tenant_id, parent_id)` and `(tenant_id, status)`.
+
+---
+
+### `attributes` / `attribute_values`
+Purpose: a named axis of product variation (Color, Size) or a descriptive facet (Fabric, Custom) — see `App\Enums\AttributeType`. Color/Size values are selected on a variant (`product_variants.color_attr_id`/`size_attr_id`); Fabric/Custom values attach to a product as a whole (`product_attribute` pivot).
+
+`attributes`:
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `name` | string | No | — | |
+| `slug` | string | No | — | Unique per tenant |
+| `type` | string | No | — | `App\Enums\AttributeType` — `color`, `size`, `fabric`, `custom`. Not editable after creation |
+| `sort_order` | int unsigned | No | `0` | |
+| `status` | string | No | `active` | `App\Enums\AttributeStatus` |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+| `deleted_at` | timestamp | Yes | null | Soft delete |
+
+`attribute_values`:
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `attribute_id` | bigint unsigned | No | — | FK → `attributes.id`, `cascadeOnDelete` |
+| `value` | string | No | — | Unique per attribute |
+| `hex_color` | string(7) | Yes | null | Only accepted when the parent attribute's type is `color` (`AttributeType::supportsHexColor()`), enforced in `AttributeValueService`, not the DB |
+| `sort_order` | int unsigned | No | `0` | |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+
+Indexes: `attributes` unique `(tenant_id, slug)`, index `(tenant_id, type)`. `attribute_values` unique `(attribute_id, value)`.
+
+---
+
+### `occasions`
+Purpose: a flat merchandising tag applied to a product as a whole (Wedding, Eid, Office, Casual, Party) — deliberately not an `AttributeType` case, see Decision D-24.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `name` | string | No | — | |
+| `slug` | string | No | — | Unique per tenant |
+| `icon` | string | Yes | null | |
+| `sort_order` | int unsigned | No | `0` | |
+| `status` | string | No | `active` | `App\Enums\OccasionStatus` |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+| `deleted_at` | timestamp | Yes | null | Soft delete |
+
+Indexes: unique `(tenant_id, slug)`.
+
+---
+
+### `tags` / `taggables`
+Purpose: a free-form label (New Arrival, Bestseller, Eid Special, Sale) applicable to any taggable model via the polymorphic `taggables` pivot. Only `Product` uses it today.
+
+`tags`:
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `name` | string | No | — | |
+| `slug` | string | No | — | Unique per tenant |
+| `color` | string(7) | Yes | null | Hex |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+| `deleted_at` | timestamp | Yes | null | Soft delete |
+
+`taggables` (pivot, no `id`, no `tenant_id` — see Decision D-25):
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `tag_id` | bigint unsigned | No | — | FK → `tags.id`, `cascadeOnDelete` |
+| `taggable_id` | bigint unsigned | No | — | Polymorphic target id |
+| `taggable_type` | string | No | — | Polymorphic target class |
+
+Indexes: `tags` unique `(tenant_id, slug)`. `taggables` unique `(tag_id, taggable_type, taggable_id)`.
+
+---
+
+### `products`
+Purpose: one catalog listing. The plan's `skus` limit counts every non-archived product (`ProductStatus::countsTowardSkuLimit()`), enforced in `App\Services\Product\ProductService`.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `store_id` | bigint unsigned | Yes | null | FK → `stores.id`, `nullOnDelete`. Which branch catalogued it, **not** where it's stocked — per-branch stock is a Phase 5.D concern |
+| `category_id` | bigint unsigned | No | — | FK → `categories.id`, `restrictOnDelete` — deleting a category with products is blocked (`CategoryService::delete()`); the FK is the backstop |
+| `name` | string | No | — | |
+| `slug` | string | No | — | Unique per tenant, auto-generated from `name` |
+| `sku` | string | No | — | Unique per tenant, upper-cased on write |
+| `description` | text | Yes | null | |
+| `brand` | string | Yes | null | |
+| `base_price` | decimal(10,2) | No | — | |
+| `sale_price` | decimal(10,2) | Yes | null | Only effective when lower than `base_price` (`Product::effectivePrice()`) |
+| `status` | string | No | `draft` | `App\Enums\ProductStatus` — `draft`, `published`, `archived` |
+| `is_tryon_ready` | boolean | No | `false` | Set once Phase 5.C's background-removal job succeeds on at least one image |
+| `season` | string | Yes | null | |
+| `publish_at` / `unpublish_at` | timestamp | Yes | null | Honoured by a Phase 5.D scheduler job, not yet built |
+| `meta` | json | Yes | null | |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+| `deleted_at` | timestamp | Yes | null | Soft delete. `ProductService::delete()` also removes every image's physical file, since nothing else will (the Phase 5.C orphan sweeper doesn't exist yet) |
+
+Indexes: unique `(tenant_id, sku)` and `(tenant_id, slug)`; composite `(tenant_id, status)` and `(tenant_id, category_id)`.
+
+---
+
+### `product_variants`
+Purpose: one buyable color/size combination of a product.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `product_id` | bigint unsigned | No | — | FK → `products.id`, `cascadeOnDelete` |
+| `sku` | string | No | — | Unique per tenant, upper-cased on write |
+| `color_attr_id` | bigint unsigned | Yes | null | FK → `attribute_values.id`, `nullOnDelete`. Must belong to a Color-type attribute, checked in `ProductService`, not the DB |
+| `size_attr_id` | bigint unsigned | Yes | null | Same, Size-type |
+| `price` | decimal(10,2) | Yes | null | Null means "use the product's own `base_price`/`sale_price`" (`ProductVariant::effectivePrice()`) |
+| `stock` | int unsigned | No | `0` | Single aggregate quantity — per-branch breakdown arrives with Phase 5.D's `stock_movements` |
+| `barcode` | string | Yes | null | |
+| `status` | string | No | `active` | `App\Enums\ProductVariantStatus` |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+| `deleted_at` | timestamp | Yes | null | Soft delete — removed by `ProductService`'s update-time variant diffing when omitted from a payload |
+
+Indexes: unique `(tenant_id, sku)`; unique `(product_id, color_attr_id, size_attr_id)` named `product_variants_axis_unique`; index on `product_id`.
+
+---
+
+### `product_images`
+Purpose: one uploaded image for a product or a specific variant of it.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `product_id` | bigint unsigned | No | — | FK → `products.id`, `cascadeOnDelete` |
+| `variant_id` | bigint unsigned | Yes | null | FK → `product_variants.id`, `cascadeOnDelete`. Null means "belongs to the product generally" |
+| `disk` | string | No | `tenant` | |
+| `path` | string | No | — | Relative path on `disk` |
+| `cdn_url` | string | Yes | null | Precomputed CDN URL; `ProductImage::url()` falls back to resolving the disk URL when null |
+| `type` | string | No | `gallery` | `App\Enums\ProductImageType` — `gallery`, `tryon`, `swatch` |
+| `sort_order` | int unsigned | No | `0` | |
+| `is_primary` | boolean | No | `false` | Exactly one per product; the first upload becomes primary automatically, and deleting the primary hands the role to the next remaining image |
+| `created_at` | timestamp | Yes | null | No `updated_at` — `ProductImage::UPDATED_AT = null` |
+
+Indexes: composite `(product_id, sort_order)`; index on `variant_id`.
+
+---
+
+### `product_occasion` / `product_attribute` / `product_size_chart`
+Purpose: plain many-to-many join tables between already tenant-scoped models — no `id`, no `tenant_id`, no timestamps (every query reaches them through `Product`'s, `Occasion`'s, `AttributeValue`'s, or `SizeChart`'s own relation).
+
+| Table | Columns | Primary key |
+|---|---|---|
+| `product_occasion` | `product_id`, `occasion_id` | `(product_id, occasion_id)` |
+| `product_attribute` | `product_id`, `attribute_value_id` | `(product_id, attribute_value_id)` — only Fabric/Custom values; Color/Size live on `product_variants` instead |
+| `product_size_chart` | `product_id`, `size_chart_id` | `(product_id, size_chart_id)` |
+
+---
+
+### `size_charts`
+Purpose: a reusable table of body measurements per size, attachable to any number of products via `product_size_chart`.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `name` | string | No | — | |
+| `rows` | json | No | — | Ordered array of `{size, measurements: {label: value}}` — a flexible schema rather than fixed measurement columns, since a Panjabi chart and a Saree chart need entirely different fields |
+| `unit` | string(8) | No | `in` | |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+| `deleted_at` | timestamp | Yes | null | Soft delete |
+
+Indexes: index on `tenant_id`.
+
+---
+
+### `price_history`
+Purpose: an immutable audit row per price field change on a product or variant, written by `App\Services\Product\PriceHistoryService::recordIfChanged()`.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `product_id` | bigint unsigned | No | — | FK → `products.id`, `cascadeOnDelete` |
+| `variant_id` | bigint unsigned | Yes | null | FK → `product_variants.id`, `cascadeOnDelete`. Null for a `base_price`/`sale_price` change on the product itself |
+| `field` | string | No | — | `base_price`, `sale_price`, or `price` (variant) |
+| `old_value` | decimal(10,2) | Yes | null | Null on the very first recorded change |
+| `new_value` | decimal(10,2) | No | — | **Not nullable** — clearing a sale price back to "no discount" is not logged as a price event; only concrete price values are tracked |
+| `user_id` | bigint unsigned | Yes | null | FK → `users.id`, `nullOnDelete` — the acting staff member, kept even if their account is later removed |
+| `created_at` | timestamp | No | — | No `updated_at` — `PriceHistory::UPDATED_AT = null` |
+
+Indexes: composite `(product_id, created_at)`.
+
+---
+
+### `product_images` — Phase 5.C additions
+Purpose: five columns added on top of the Phase 5.B table for media processing.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `size_bytes` | bigint unsigned | No | `0` | Original upload's byte size — what `StorageQuotaService` sums to derive `tenants.storage_bytes_used` |
+| `derivatives` | json | Yes | null | `{"sm": "path", "md": "path", "lg": "path"}`, populated by `ProcessProductImageJob`. JSON, not three columns — a future size needs no migration |
+| `background_removal_status` | string | Yes | null | `App\Enums\BackgroundRemovalStatus` — `pending`, `processing`, `completed`, `failed`. Null means "never submitted"; only meaningful on a `gallery`-type row |
+| `background_removal_attempts` | tinyint unsigned | No | `0` | |
+| `background_removal_error` | string | Yes | null | The last failure's message, shown in `BackgroundRemovalFailedMail` |
+
+### `tenants` — Phase 5.C addition
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `storage_bytes_used` | bigint unsigned | No | `0` | Denormalised running total, kept in sync by `StorageQuotaService::increment()`/`decrement()` on every upload/delete. `php artisan storage:recalculate` re-derives it from the real `SUM(product_images.size_bytes)` as a drift-correcting backstop — never a live `SUM()` on every request, which would get slower as a tenant's catalog grows |
+
+---
+
+### `stock_movements`
+Purpose: the inventory ledger — one immutable row per stock change at one branch, written only by `App\Services\Inventory\StockService`. A variant's true on-hand quantity at one store is the `SUM(quantity)` of its rows for that `(variant_id, store_id)` pair, never a cached column; `product_variants.stock` is a separate tenant-wide aggregate that only an `adjustment` movement changes — a transfer redistributes between two stores and nets to zero, so the aggregate is untouched.
+
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `id` | bigint unsigned | No | — | Primary key |
+| `tenant_id` | bigint unsigned | No | — | FK → `tenants.id`, `cascadeOnDelete`. `BelongsToTenant` |
+| `variant_id` | bigint unsigned | No | — | FK → `product_variants.id`, `cascadeOnDelete` |
+| `store_id` | bigint unsigned | No | — | FK → `stores.id`, `cascadeOnDelete` |
+| `type` | string | No | — | `App\Enums\StockMovementType` — `adjustment`, `transfer_out`, `transfer_in`. Purely descriptive; `quantity` already carries the signed delta |
+| `quantity` | int | No | — | Signed — positive increases on-hand at `store_id`, negative decreases it |
+| `reference` | string | Yes | null | Shared by one `transfer_out`/`transfer_in` pair (a UUID) so both halves of one transfer can be found together; null for a plain adjustment |
+| `note` | string | Yes | null | |
+| `user_id` | bigint unsigned | Yes | null | FK → `users.id`, `nullOnDelete` — the acting staff member, kept even if their account is later removed (same reasoning as `price_history.user_id`) |
+| `created_at` / `updated_at` | timestamp | Yes | null | |
+
+Indexes: composite `(tenant_id, variant_id, store_id)`; index on `reference`.
+
+### `product_variants` — Phase 5.D addition
+| Column | Type | Null | Default | Description |
+|---|---|---|---|---|
+| `low_stock_threshold` | int unsigned | Yes | null | Null means "no alert configured", distinct from `0` ("only warn me when it's completely gone"). Compared against the tenant-wide aggregate `stock`, not a per-branch figure — `App\Services\Inventory\StockService`'s own docblock explains why that scope was kept bounded |
 
 ---
 ---
@@ -1931,7 +2194,205 @@ Aggregated with two grouped cross-tenant queries rather than a loop, so a 200-sh
 `member_tenant_ids` deliberately carries no `exists:tenants,id` rule: that would confirm to any caller whether an arbitrary tenant id is real. An unresolvable id returns one generic `422`. Removing the group owner from its own group is a `422`. Deleting a group removes only the group and its memberships — no franchisee tenant is affected, since membership is a reporting relationship, never ownership.
 
 ## 7.7 Catalog Endpoints
-_Empty — populated in Phase 5._
+
+All routes below sit behind `auth:sanctum` + `tenant.active` + `tenant.2fa`, same guard stack as every other tenant business route. Gate strings come from `config/permissions.php`.
+
+### Categories
+
+| Method | URL | Gate |
+|---|---|---|
+| GET | `/categories` | `categories.view` |
+| POST | `/categories` | `categories.create` |
+| PATCH | `/categories/reorder` | `categories.update` |
+| GET | `/categories/{category}` | `categories.view` |
+| PATCH | `/categories/{category}` | `categories.update` |
+| DELETE | `/categories/{category}` | `categories.delete` |
+
+`GET /categories` returns the tenant's **complete tree**, nested, not paginated — `Category::MAX_DEPTH` (4) bounds it small enough that pagination would only get in the way of a drag-and-drop editor that needs the whole structure at once:
+```json
+{ "data": {
+  "categories": [{ "id", "parent_id", "name", "slug", "icon", "image_url", "gender",
+                    "sort_order", "status", "product_count", "children": [ … ] }],
+  "category_limit": { "used", "max", "can_create_more" }
+} }
+```
+
+`POST /categories` request: `{ "name", "parent_id"?, "icon"?, "gender"?, "sort_order"? }`. `slug` is never accepted from the client — derived from `name` and uniqued per tenant (`-2`, `-3`, … on collision), the same pattern `RegistrationService` uses for a tenant's own slug. Enforces the plan's `categories` limit (`422`/`403` `plan_limit_exceeded`) and a nesting depth cap — a `parent_id` that would put the new row at depth ≥ `Category::MAX_DEPTH` is a `422` on `parent_id`.
+
+`PATCH /categories/{category}` re-parenting is checked for cycles: moving a category under its own descendant, or under itself, is a `422` on `parent_id` — a check that requires walking the tree and so cannot be a static validation rule.
+
+`DELETE /categories/{category}` is a `422` if the category has children or products — move or reassign them first, the same "promote another branch to main" shape as deleting a `store`.
+
+`PATCH /categories/reorder` request: `{ "order": [{ "id", "sort_order" }, …] }`. Every id must belong to the tenant **and share the same parent** — drag-and-drop only ever reorders one sibling group at a time.
+
+### Attributes
+
+| Method | URL | Gate |
+|---|---|---|
+| GET | `/attributes` | `attributes.view` |
+| POST | `/attributes` | `attributes.create` |
+| GET | `/attributes/{attribute}` | `attributes.view` |
+| PATCH | `/attributes/{attribute}` | `attributes.update` |
+| DELETE | `/attributes/{attribute}` | `attributes.delete` |
+| POST | `/attributes/{attribute}/values` | `attributes.update` |
+| PATCH | `/attributes/{attribute}/values/{value}` | `attributes.update` |
+| DELETE | `/attributes/{attribute}/values/{value}` | `attributes.update` |
+
+`POST /attributes` request: `{ "name", "type": "color"\|"size"\|"fabric"\|"custom", "sort_order"? }`. `type` cannot be changed after creation.
+
+`POST /attributes/{attribute}/values` request: `{ "value", "hex_color"?, "sort_order"? }`. `hex_color` is rejected (`422`) unless the parent attribute's `type` is `color`. `DELETE` on a value in use by a live variant still succeeds — the FK is `nullOnDelete`; `DELETE /attributes/{attribute}` is what's blocked (`422`) when any of its values are in use, since removing the whole axis out from under existing variants would be more disruptive than removing one no-longer-used value.
+
+### Occasions
+
+| Method | URL | Gate |
+|---|---|---|
+| GET | `/occasions` | `occasions.view` |
+| POST | `/occasions` | `occasions.create` |
+| PATCH | `/occasions/{occasion}` | `occasions.update` |
+| DELETE | `/occasions/{occasion}` | `occasions.delete` |
+
+Request/response shape mirrors Categories minus the tree — flat, slugged, no plan limit.
+
+### Tags
+
+| Method | URL | Gate |
+|---|---|---|
+| GET | `/tags` | `tags.view` |
+| POST | `/tags` | `tags.create` |
+| PATCH | `/tags/{tag}` | `tags.update` |
+| DELETE | `/tags/{tag}` | `tags.delete` |
+| PUT | `/products/{product}/tags` | `products.update` |
+
+`POST /tags` request: `{ "name", "color"? }` (6-digit hex). `PUT /products/{product}/tags` request: `{ "tag_ids": [] }` — always the **complete** desired set, diffed via `MorphToMany::sync()`, not separate attach/detach calls.
+
+### Size charts
+
+| Method | URL | Gate |
+|---|---|---|
+| GET | `/size-charts` | `products.view` |
+| POST | `/size-charts` | `products.update` |
+| GET | `/size-charts/{sizeChart}` | `products.view` |
+| PATCH | `/size-charts/{sizeChart}` | `products.update` |
+| DELETE | `/size-charts/{sizeChart}` | `products.update` |
+| PUT | `/products/{product}/size-charts` | `products.update` |
+| GET | `/kiosk/products/{product}/size-charts` | Kiosk device token |
+
+`POST /size-charts` request: `{ "name", "unit"?, "rows": [{ "size", "measurements": { "chest": "40", … } }] }`. A chart is reusable across many products (`product_size_chart` is many-to-many) — deleting one detaches it everywhere rather than being blocked, unlike deleting a category still holding products.
+
+`GET /kiosk/products/{product}/size-charts` is the popup payload a shopper taps "size guide" to see — authenticated by device token under the existing `kiosk.auth` group, not a user session:
+```json
+{ "data": { "size_charts": [{ "id", "name", "unit", "rows" }] } }
+```
+
+### Products
+
+| Method | URL | Gate |
+|---|---|---|
+| GET | `/products` | `products.view` |
+| POST | `/products` | `products.create` |
+| GET | `/products/{product}` | `products.view` |
+| PATCH | `/products/{product}` | `products.update` |
+| DELETE | `/products/{product}` | `products.delete` |
+| POST | `/products/{product}/duplicate` | `products.create` |
+| POST | `/products/{product}/publish` | `products.publish` |
+| POST | `/products/{product}/unpublish` | `products.publish` |
+| PUT | `/products/{product}/occasions` | `products.update` |
+| POST | `/products/{product}/images` | `products.update` |
+| PATCH | `/products/{product}/images/reorder` | `products.update` |
+| DELETE | `/products/{product}/images/{image}` | `products.update` |
+| GET | `/products/{product}/price-history` | `products.view` |
+
+`GET /products` filters (all optional query params): `category_id`, `status`, `tag_id`, `occasion_id`, `min_price`, `max_price`, `in_stock=1`, `search` (plain `LIKE` on `name`/`sku` — typo-tolerant MeiliSearch is Phase 5.E). Response mirrors `GET /stores`'s shape — paginated rows plus a headroom block:
+```json
+{ "data": {
+  "products": [{ "id", "name", "sku", "slug", "category", "base_price", "sale_price",
+                 "effective_price", "status", "status_label", "is_tryon_ready",
+                 "variant_count", "total_stock", "primary_image_url", "created_at" }],
+  "meta": { "current_page", "per_page", "total", "last_page" },
+  "sku_limit": { "used", "max", "can_create_more" }
+} }
+```
+
+`POST /products` request: `{ "name", "category_id", "sku", "description"?, "brand"?, "base_price", "sale_price"?, "status"?, "season"?, "publish_at"?, "unpublish_at"?, "meta"?, "variants": [{ "sku", "color_attr_id"?, "size_attr_id"?, "price"?, "stock"?, "barcode"?, "status"? }], "occasion_ids"?, "tag_ids"?, "attribute_value_ids"?, "size_chart_ids"? }`. `variants` is required, min 1 — a product always has at least one sellable SKU. Product and every variant are created inside one transaction. Enforces the plan's `skus` limit exactly like `POST /stores` enforces `branches`. `color_attr_id`/`size_attr_id` must resolve to an `attribute_values` row whose parent `Attribute.type` is `color`/`size` respectively — a `422` naming the field if not (checked in the service, since it needs the referenced row's own parent). Images are **not** part of this request — see below.
+
+`PATCH /products/{product}` accepts the same body, all fields `sometimes`. `variants` entries carrying an `id` update that variant; entries with no `id` are created; existing variants **absent from the payload entirely are removed** (soft-deleted) — add/update/remove diffing in one call. Changing `base_price`/`sale_price`, or a variant's `price`, writes a `price_history` row when the value actually differs from what's currently stored, with `user_id` set to the acting user.
+
+`DELETE /products/{product}` soft-deletes and removes every image's physical file from storage — there is no try-on-session asset to clean up yet (Phase 6 doesn't exist); once it does, that cleanup lands here too.
+
+`POST /products/{product}/duplicate` clones the product as a new `draft` with fresh SKUs (`{sku}-COPY-{random}`), copied variant axis/price but **zeroed stock**, and copied images at **new storage paths** — never the same path two products' rows point at, so deleting one product's images can never break the other's. Enforces the `skus` limit like a normal create.
+
+`POST /products/{product}/publish` / `/unpublish` toggle `status` between `published` and `draft`. Re-publishing an **archived** product re-checks the `skus` limit, the same "reopening a closed branch" shape as `PATCH /stores/{store}`.
+
+`POST /products/{product}/images` — multipart, **not** part of the JSON create call, since PHP only populates uploaded files on a POST body (same reasoning as `StoreBrandingRequest`). Request: `images[]` (files, max 20, 8 MB each), `variant_id`?, `type`? (`gallery`\|`tryon`\|`swatch`, default `gallery`). Stores the original upload as-is; a queued job (`ProcessProductImageJob`, §7.7a) generates sm/md/lg WebP derivatives asynchronously so the response doesn't wait on it. The first image a product ever receives becomes primary automatically. Enforces the plan's `storage_gb` quota — `422` on `images` if the upload would exceed it.
+
+`PATCH /products/{product}/images/reorder` request: `{ "order": [{ "id", "sort_order" }], "primary_image_id"? }`.
+
+`GET /products/{product}/price-history` — paginated, newest first:
+```json
+{ "data": {
+  "price_history": [{ "id", "variant_id", "field", "old_value", "new_value", "changed_by", "created_at" }],
+  "meta": { "current_page", "per_page", "total", "last_page" }
+} }
+```
+
+## 7.7a Media Endpoints (Phase 5.C)
+
+| Method | URL | Gate |
+|---|---|---|
+| POST | `/products/{product}/images/{image}/remove-background` | `products.update` |
+| POST | `/products/{product}/tryon-asset` | `products.update` |
+| DELETE | `/products/{product}/images/{image}` | `products.update` |
+| POST | `/media/presigned-upload` | `products.create` |
+
+`POST /products/{product}/images/{image}/remove-background` — `$image` must be `type: gallery` (`422` otherwise). Sets `background_removal_status: pending` and dispatches `App\Jobs\RemoveBackgroundJob` (queue `media`, 3 tries with backoff). On success, creates a new `type: tryon` `ProductImage` and sets `products.is_tryon_ready = true`; on final failure, sets `background_removal_status: failed` with `background_removal_error`, and emails the tenant owner (`BackgroundRemovalFailedMail`). Callable again on a `failed` row to retry — it always re-reads the current file from storage, so a retry is identical to the first attempt except the attempt counter. The provider contract (`config('background_removal')`) is assumed, not verified against a real account — see PROGRESS.md Decision D-27.
+
+`POST /products/{product}/tryon-asset` — multipart, `{ "image" (PNG, required), "variant_id"? }`. The manual re-upload for when the AI result is wrong: replaces whatever `type: tryon` image already exists for that product/variant scope (there is only ever one active try-on asset per variant) rather than accumulating a second one, and sets `is_tryon_ready = true` directly with no job involved.
+
+`DELETE /products/{product}/images/{image}` — deletes the file, every generated derivative, and decrements `tenants.storage_bytes_used` by the image's recorded `size_bytes`. If the deleted image was primary, the next remaining image (by `sort_order`) automatically becomes primary.
+
+`POST /media/presigned-upload` request: `{ "filename", "content_type" }` (`content_type` restricted to `image/jpeg`\|`image/png`\|`image/webp`). Response `200`:
+```json
+{ "data": { "url", "path", "headers": {}, "expires_in_seconds": 900 } }
+```
+Only functions when the `tenant` disk is backed by a real S3/R2 driver (production) — against the local development disk this always returns `502` `media_processing_error` rather than a URL that would silently 404, the same honesty-over-guessing precedent as SSLCommerz's unset refund endpoints (Decision D-18).
+
+## 7.7b Inventory Endpoints (Phase 5.D)
+
+| Method | URL | Gate |
+|---|---|---|
+| GET | `/variants/{variant}/stock` | `products.view` |
+| POST | `/variants/{variant}/stock/adjust` | `products.update` |
+| POST | `/variants/{variant}/stock/transfer` | `products.update` |
+| GET | `/variants/{variant}/stock/movements` | `products.view` |
+| PATCH | `/variants/{variant}/low-stock-threshold` | `products.update` |
+| GET | `/inventory/report` | `products.view` |
+
+`GET /variants/{variant}/stock` response `200`:
+```json
+{ "data": { "variant_id", "total_stock", "low_stock_threshold", "is_low_stock",
+            "by_store": [{ "store_id", "store_name", "on_hand" }] } }
+```
+`by_store` only lists branches that have ever had a movement for this variant — a branch with zero movements is omitted, not listed at zero, since it has simply never stocked it.
+
+`POST /variants/{variant}/stock/adjust` request: `{ "store_id", "quantity" (signed, non-zero), "note"? }`. Positive receives stock in, negative writes it off; a negative adjustment that would take this branch's on-hand below zero is a `422`. Updates the tenant-wide `product_variants.stock` aggregate by the same delta.
+
+`POST /variants/{variant}/stock/transfer` request: `{ "from_store_id", "to_store_id" (different), "quantity" (positive), "note"? }`. Writes a matched `transfer_out`/`transfer_in` pair sharing one `reference` UUID; `422` if `from_store_id` doesn't have enough on-hand. The tenant-wide aggregate is **not** touched — nothing was gained or lost, only relocated.
+
+`PATCH /variants/{variant}/low-stock-threshold` request: `{ "low_stock_threshold" }` — `present`, `nullable`; `null` clears the alert entirely (distinct from omitting the field, which changes nothing).
+
+`GET /variants/{variant}/stock/movements` — paginated, newest first (tie-broken by `id`, not `created_at`, since two movements in the same second would otherwise sort unpredictably).
+
+`GET /inventory/report` response `200`:
+```json
+{ "data": {
+  "summary": { "total_variants", "out_of_stock_count", "low_stock_count" },
+  "low_stock": [{ "variant_id", "sku", "product_id", "product_name", "stock", "low_stock_threshold" }],
+  "dead_stock": [],
+  "dead_stock_note": "Dead-stock detection requires try_on_sessions, which does not exist until Phase 6 — see PROGRESS.md 5.D.",
+  "recent_movements": [{ "id", "variant_sku", "store_name", "type", "quantity", "created_at" }]
+} }
+```
+`dead_stock` is honestly empty with an explanatory note, not a fabricated number — see PROGRESS.md's 5.D SKIPPED item.
 
 ## 7.8 Try-On Endpoints
 _Empty — populated in Phase 6._
@@ -2094,7 +2555,77 @@ _Implementation details, models, and services: to be filled in Phase 6._
 
 **Feature scope:** multi-level categories, product upload with variants and images, bulk Excel/CSV import with validation, AI background removal producing AR-ready PNG, size chart integration, product tagging, inventory with threshold alerts and auto-hide, season/expiry scheduling, digital catalog links, Facebook catalog sync, price history.
 
-_To be filled in Phase 5._
+**Categories, attributes, occasions & tags — built in Phase 5.A:**
+
+*Categories (`App\Models\Category`, `App\Services\Catalog\CategoryService`)*
+- A self-referencing tree (`parent_id`) to a hard-capped depth of `Category::MAX_DEPTH` (4 — "Boys > Panjabi > Wedding > Premium"). No nested-set/materialized-path package is installed; the service walks the adjacency list in PHP. See PROGRESS.md Decision D-24 for why, and for why "occasion" is not modelled as an attribute type despite the product document listing it alongside color/size/fabric.
+- The plan's `categories` limit is enforced at the service call site, the exact `StoreService`/`branches` pattern. Re-parenting is checked for cycles (a category cannot move under its own descendant) and depth (the new position cannot exceed the cap) — both require walking the tree, so neither is a static form-request rule.
+- A category with children or products cannot be deleted — move or reassign first, the same shape as "promote another branch to main before deleting it".
+- `GET /categories` returns the tenant's whole tree nested in one response, not paginated — a drag-and-drop editor needs the full structure, and the depth cap keeps a tenant's tree small regardless.
+- `CatalogTaxonomyService` seeds the default Bangladeshi apparel taxonomy (Boys/Girls top-level, six children each) plus five occasions and four tags, idempotently, via `php artisan catalog:seed-defaults {tenant}` — on demand, not automatic at registration, since Phase 2.A's own tenant-provisioning service is itself still an open item (same deferral shape, not a new one). Building this the first time surfaced a real bug: outside a request there is no `ResolveTenant` middleware to set an active `TenantContext`, so `TenantScope`'s fail-closed rule silently broke `firstOrCreate()`'s idempotency until `seed()` was wrapped in `TenantContext::runAs()` — see Decision D-26.
+
+*Attributes (`App\Models\Attribute`/`AttributeValue`, `App\Services\Catalog\AttributeService`/`AttributeValueService`)*
+- Four types (`App\Enums\AttributeType`): Color and Size **define a variant axis** — a `product_variants` row selects exactly one value of each via `color_attr_id`/`size_attr_id`. Fabric and Custom are descriptive-only and attach to a product as a whole via the `product_attribute` pivot, never creating a variant.
+- `hex_color` on a value is only accepted when the parent attribute's type is Color, checked in the service against the already-loaded parent (a form request cannot see it). A value already selected by a live variant blocks deleting its *whole attribute* (`nullOnDelete` makes deleting the *value alone* safe, so only the coarser operation needs the guard).
+
+*Occasions and Tags (`App\Models\Occasion`/`Tag`)*
+- Occasions are a flat taxonomy (Wedding, Eid, Office, Casual, Party), attached to a product via the plain `product_occasion` pivot. Tags are free-form (New Arrival, Bestseller, …) attached via the polymorphic `taggables` pivot, deliberately built without a tagging package (none is installed) and deliberately carrying no `tenant_id` of its own — a real bug found building `PUT /products/{product}/tags`, see Decision D-25.
+
+**Products & variants — built in Phase 5.B:**
+
+*Products (`App\Models\Product`, `App\Services\Product\ProductService`)*
+- One row per listing, with variants and images as its children. The plan's `skus` limit counts every non-archived product (`ProductStatus::countsTowardSkuLimit()`) — archiving, not deleting, is how a tenant retires a listing without losing its history *and* frees the slot, the same "closed branch" shape as `branches`.
+- `POST /products` creates the product and every variant in one transaction. `PATCH /products/{product}` diffs its `variants` array against what already exists: entries with an `id` update that variant, entries without one are created, and existing variants **absent from the payload are removed** — add/update/remove in a single call, not three endpoints.
+- `color_attr_id`/`size_attr_id` on a variant are re-validated against their parent attribute's *type*, not just existence — a `size`-typed value passed as `color_attr_id` is a `422`, a check that needs the referenced row's own parent loaded and so cannot be a static rule.
+- Duplicating a product copies variants (axis and price, **zeroed stock** — a duplicate is a new listing, not a transfer of inventory) and images (to **new storage paths**, never the same path two products' rows point at, so deleting one product's images can never break the other's).
+- Deleting a product soft-deletes it and removes every image's physical file — nothing else will clean these up yet, since the orphan sweeper Phase 5.C describes doesn't exist. There is no try-on-session asset to clean up either, since Phase 6 doesn't exist; that cleanup lands here once it does, the same honest phase-boundary pattern Phase 4 used for its own two skipped items.
+
+*Images (`App\Models\ProductImage`, `App\Services\Product\ProductImageService`)*
+- A separate multipart endpoint from product create/update, for the same reason `StoreBrandingRequest` is separate from `StoreStoreRequest` — PHP only populates uploaded files on a POST body. Stores the original upload as-is on the tenant disk; resizing, WebP conversion, and AI background removal are Phase 5.C's job, not this one's.
+- The first image a product receives becomes primary automatically; deleting the primary hands the role to whatever remains, so a product with photos left is never shown with none flagged primary.
+
+*Size charts (`App\Models\SizeChart`, `App\Services\Product\SizeChartService`)*
+- Reusable across many products (`product_size_chart` many-to-many) — a measurement correction on one chart updates every product using it, not N rows. `rows` is a free-form ordered array (`{size, measurements: {label: value}}`) rather than fixed measurement columns, since a Panjabi chart and a Saree chart need entirely different fields. The kiosk popup payload (`GET /kiosk/products/{product}/size-charts`) is served under the existing device-token-authenticated `kiosk.auth` group, not a user session.
+
+*Price history (`App\Models\PriceHistory`, `App\Services\Product\PriceHistoryService`)*
+- An immutable audit row per price field change (`base_price`, `sale_price`, a variant's `price`), with the acting user and timestamp, written only when the new value genuinely differs from what's stored — a PATCH resubmitting the same price is not logged, the same "only log what actually moved" instinct as `Store::getActivitylogOptions()->logOnlyDirty()`. `new_value` is not nullable by design: clearing a sale price back to "no discount" is not itself a logged price event, since the product's own current `sale_price` already shows that.
+
+**Media processing, storage quota & AI background removal — built in Phase 5.C:**
+
+*Image processing (`App\Jobs\ProcessProductImageJob`, `App\Services\Media\ImageProcessingService`)*
+- Every uploaded image is stored as-is synchronously (fast response), then handed to a queued job (`media` queue) that generates sm/md/lg WebP derivatives via `intervention/image-laravel`, recorded on `product_images.derivatives` as `{"sm": path, "md": path, "lg": path}` — JSON, not three columns, so a future size needs no migration.
+- "Virus-safe handling" (the product document's own wording) is content-decode validation, not a scanning service this codebase doesn't have: Laravel's `image` validation rule runs `getimagesize()` on every upload, and Intervention's own decode step would fail loudly on anything that slipped past that. An uploaded file is never executed or served with an attacker-controlled content-type — only ever read as binary image data and re-encoded.
+
+*Storage quota (`App\Services\Media\StorageQuotaService`, `tenants.storage_bytes_used`)*
+- A denormalised running total, not a live `SUM()` — checked and updated at the point of every upload/delete, the same "count-then-assert" shape `PlanService::assertWithinLimit()` already establishes for row-counted limits, adapted for a byte-based one (`storage_gb` is converted GB↔bytes via `Tenant::storageUsedGb()`). `App\Support\UsageCounter` (Redis-backed, Decision D-17) was considered and rejected for this — its `resetAll()` wipes every metric nightly, correct for a daily quota like try-on sessions but wrong for a cumulative gauge that must never zero out on its own.
+- `php artisan storage:recalculate {tenant?}` re-derives the running total from the real `SUM(product_images.size_bytes)`, a self-healing backstop against drift, scheduled nightly.
+
+*AI background removal (`App\Jobs\RemoveBackgroundJob`, `App\Services\Media\BackgroundRemovalService`)*
+- Opt-in per gallery image (`POST /products/{product}/images/{image}/remove-background`), not automatically dispatched on every upload — a product often has several lifestyle/detail shots and only one or two need an AR-ready cutout, and the provider is a paid, rate-limited external call. On success, creates a new `type: tryon` `ProductImage` (never overwrites the original) and sets `products.is_tryon_ready = true`. Retries 3 times with backoff before giving up; final failure emails the tenant owner (`BackgroundRemovalFailedMail`) via a job on the `notifications` queue, since Phase 11 (Notification System) doesn't exist yet — the same plain-`Mailable`-from-a-job shape `InvoiceMail`/`SendInvoiceEmailJob` already established.
+- The provider's exact HTTP contract is assumed (remove.bg-shaped: multipart `image_file`, `X-Api-Key` header, raw PNG response), not verified against a real account — see PROGRESS.md Decision D-27, the same "be honest about what can't be verified yet" shape as SSLCommerz's unset refund endpoints (D-18).
+- `POST /products/{product}/tryon-asset` is the manual correction path — an owner-supplied PNG replaces whatever try-on asset already exists for that product/variant scope, no AI or job involved.
+
+*Direct-to-S3 & orphan cleanup*
+- `POST /media/presigned-upload` only functions when the `tenant` disk is genuinely S3/R2-backed; against the local development disk it always fails with a clear `502`, never a URL that would silently 404.
+- `php artisan media:sweep-orphans {tenant?}` deletes files on one tenant's own storage prefix that no `product_images` row references at all — an upload whose DB write failed after the file was already stored, a row deleted directly in a database console. Scoped one tenant at a time, never a bucket-wide listing.
+
+**Inventory — built in Phase 5.D:**
+
+*The stock ledger (`stock_movements`, `App\Services\Inventory\StockService`)*
+- `stock_movements` is the source of truth for *where* a variant's units physically are; `product_variants.stock` is a denormalised tenant-wide total kept in sync alongside it, only moved by an `adjustment` — a `transfer_out`/`transfer_in` pair (sharing one `reference` UUID) redistributes between two branches and nets to zero, so the aggregate is deliberately untouched by a transfer.
+- A negative adjustment that would take a branch's on-hand below zero is rejected (`422`), as is a transfer for more than the source branch actually has on-hand — both computed live from `SUM(stock_movements.quantity)` for that `(variant, store)` pair, never a cached per-branch column.
+- Low-stock threshold and the "auto-hide out-of-stock" scope (`Product::scopeVisibleInCatalog()`) both compare against the tenant-wide aggregate, not a per-branch figure — a deliberately bounded scope, since the product document's own wording never asked for a per-branch threshold either.
+
+*Auto-hide, scheduling & alerts*
+- `Product::scopeVisibleInCatalog()` (published + at least one in-stock, active variant) is built and tested, but no customer-facing catalog-browsing endpoint consumes it yet — that's Phase 6's kiosk try-on flow and Phase 9's portal, not a Phase 5 concern. The dashboard's own `GET /products` deliberately never applies it by default, since an owner restocking a product needs to see it while it's still at zero. Requires an active `TenantContext` for *two* separate nested queries, not one — see PROGRESS.md Decision D-28 for the real bug this caught.
+- `php artisan products:apply-schedule` (daily) applies `publish_at`/`unpublish_at` per tenant; `php artisan inventory:check-low-stock` (daily) emails one digest per tenant with any variant at or below its threshold, never one email per variant.
+- *Dead-stock detection is deliberately not built* — "no try-on within N days" needs `try_on_sessions`, which doesn't exist until Phase 6. `GET /inventory/report`'s `dead_stock` field is honestly `[]` with an explanatory note, the identical phase-boundary honesty Phase 4 used for its own two skipped items, not a fabricated number.
+
+**Deliberately not built yet, with reasons:**
+- *Bulk import/export, MeiliSearch, digital catalog links.* All of Phase 5.E. The product list's own `search` filter is a plain `LIKE`, a placeholder for the real thing.
+- *Dashboard frontend (category tree editor, product form, image uploader, stock adjustment UI, etc.).* Phase 5.F — every phase in Section 5 so far has built the backend API surface only.
+
+**Frontend:** not built this session — see Phase 5.F in PROGRESS.md.
 
 ## 8.3 Campaign Manager
 

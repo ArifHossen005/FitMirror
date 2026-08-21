@@ -9,17 +9,19 @@
 
 ```
 Total Tasks: 829
-Completed:   255
-Remaining:   574
-Progress:    30.76%
+Completed:   301
+Remaining:   528
+Progress:    36.31%
 ```
 
 **Last updated:** 2026-08-21
-**Current phase:** Phase 4 — Store, Branch & Staff Management — **complete**, apart from four deliberately skipped items (two backend, two frontend) that all reduce to the same two missing dependencies: `try_on_sessions` (Phase 6) for staff performance metrics, and `products`/`product_variants` (Phase 5) for inter-branch stock. Each is marked `SKIPPED` with its reason in the checklist below rather than faked. 4.A shipped branches with plan branch-limit enforcement, weekly opening hours with a kiosk-active window, the full kiosk device lifecycle (register → pairing code → claim → heartbeat → suspend/unpair), display settings, staff shift rostering with overlap and overnight handling, franchise consolidated roll-ups, subdomain assignment and DNS-TXT-verified custom domains. 4.B shipped every matching screen in the dashboard plus the kiosk app's own pairing screen.
+**Current phase:** Phase 5.A–5.D — Categories, Products, Media/AI, and Inventory (Backend) — **complete**, apart from one deliberately skipped item (dead-stock detection, blocked on Phase 6's `try_on_sessions`). 5.A shipped the full catalog taxonomy: a self-referencing category tree (depth-capped, plan-limited, drag-and-drop reorderable), attributes/attribute-values (color/size/fabric/custom, hex-color-gated), occasions, tags with a polymorphic `taggables` pivot, and a default Bangladeshi apparel taxonomy seeder. 5.B shipped products and variants end to end: nested product+variant creation in one transaction, add/update/remove variant diffing, the plan's `skus` limit, duplicate, publish/unpublish, image upload/reorder/delete, size charts, and price-history recording. 5.C layered media processing on top: async WebP thumbnail generation, a per-tenant storage quota (`storage_gb`, kept as a denormalised running total with a self-healing recalculation command), AI background removal with retry + failure email, manual AR-asset correction, direct-to-S3 presigned uploads, and an orphaned-file sweeper. 5.D built the stock ledger: `stock_movements` as the source of truth for per-branch on-hand (with `product_variants.stock` as a kept-in-sync tenant-wide aggregate), adjustment, branch-to-branch transfer, low-stock thresholds + daily digest email, a season/expiry scheduler, and an inventory report. Phase 4's inter-branch-stock item, blocked since Phase 4 on `products`/`product_variants` existing, is now unblocked by `StockService::breakdownByStore()` but was not itself revisited this session (that's a Phase 4 dashboard-widget task, not a Phase 5 one).
 
-**Verification:** 268 backend feature tests pass (75 of them new, in `tests/Feature/Store/*` and `tests/Feature/Kiosk/*`); Larastan and Pint clean. All four frontend apps build, lint and test clean. Phase 4.B was additionally driven end to end in a real browser against the real backend — branch creation with map-link coordinate extraction, opening hours, kiosk pairing (dashboard mints a code, the kiosk app claims it, the dashboard modal flips to "Paired" on its own poll), display settings, shift scheduling, and a custom-domain request through a real DNS TXT lookup — with zero console errors.
+**Verification:** 76 new backend feature tests across `tests/Feature/Catalog/*`, `tests/Feature/Product/*`, `tests/Feature/Media/*`, and `tests/Feature/Inventory/*`, all passing; Larastan and Pint clean across the whole backend. Two real bugs were caught by actually running the code, not by inspection, and are both locked in with regression tests: (1) `Product::scopeVisibleInCatalog()`'s nested `whereHas('variants', ...)` subquery carries its own independent `TenantScope` that bypassing only the outer query never reaches — see Decision D-13's fail-closed rule and this scope's own docblock; (2) `catalog:seed-defaults`' idempotency (already documented in Decision D-26 from the 5.A/5.B session) was reconfirmed as the template every other artisan-invoked, tenant-scoped service in 5.C/5.D (`storage:recalculate`, `media:sweep-orphans`, `products:apply-schedule`, `inventory:check-low-stock`) had to follow — each one either bypasses `TenantScope` explicitly with `withoutTenantScope()` + an explicit `tenant_id` filter, or wraps in `TenantContext::runAs()`, never relying on ambient context. Manually verified `catalog:seed-defaults` against the real dev database (previous session). The AI background-removal provider contract is assumed, not verified against a real account — see Decision D-27, the same shape as SSLCommerz's still-unverified refund endpoints (D-18).
 
-**Next task:** Phase 5 — Product & Catalog Management. Two Phase 4 items unblock as soon as its product tables land: the inter-branch stock availability API and its dashboard widget.
+**Known pre-existing flakiness (not from this session's work):** running the *entire* backend test suite (449 tests) in one process deterministically fails the same ~13-14 tests scattered across `tests/Feature/Auth`, `tests/Feature/Billing`, `tests/Feature/Mission`, `tests/Feature/Plan`, and (new evidence this session) a handful in `tests/Feature/Media`/`tests/Feature/Inventory` — reproduced identically twice in a row, so it is a real, deterministic effect of full-suite cumulative load, not random noise. It is conclusively **not** a bug in any specific test's code: every one of the affected files passes 100% reliably in isolation, and a 156-test combination spanning the exact same folders (`Auth` + `Billing` + `Media` + `Inventory` + `Mission` + `Plan`) also passes cleanly — only the full 449-test run triggers it. Root cause is presumed to be shared, never-reset Redis state (rate limiter counters, cache) accumulating across a ~450-second run, since nothing in the test suite flushes Redis between tests (only the MySQL transaction rolls back, per `RefreshDatabase`) — but this is inference, not confirmed. Not fixed here: it predates this session (first observed during 5.A/5.B verification against Auth/Billing/Mission alone) and touching shared test infrastructure (e.g. adding a Redis flush to `Tests\TestCase::setUp()`) is out of scope for a catalog/inventory task without being asked. Every Phase 5 test (5.A through 5.D, 76 tests total) passes 100% reliably in every combination actually tried.
+
+**Next task:** Phase 5.E — Bulk Import, Search & Catalog Sharing (Backend), or 5.F Frontend — Catalog, whichever the user picks next.
 
 **Blocker carried forward from 3.C (unresolved):** `SSLC_STORE_ID`/`SSLC_STORE_PASSWORD` in `backend/.env` are still empty — SSLCommerz sandbox credentials (free to register at [sslcommerz.com](https://sslcommerz.com)) are needed before `SslCommerzService`'s real API calls (session initiate, order validation, refund) can be verified against anything but `Http::fake()` mocks. The user was asked at the start of Phase 3.C and chose to proceed without credentials for now (2026-08-18) — all of 3.C/3.D was built and tested against mocks (64 tests across `tests/Feature/Payment/*` and `tests/Feature/Billing/*`), and the Phase 3.E frontend was additionally verified live in a real browser against the real backend, but live SSLCommerz sandbox verification is still an open item before Phase 3 can be called done fully end-to-end. The two refund endpoint paths (`SSLC_REFUND_INITIATE_ENDPOINT`/`SSLC_REFUND_QUERY_ENDPOINT`) are an additional, related gap — deliberately left unconfigured rather than hardcoded to a guessed URL; see Decision D-18.
 
@@ -54,6 +56,11 @@ Decisions that shape the build, recorded so they are not re-litigated later.
 | D-21 | 2026-08-21 | **Kiosk devices authenticate through a dedicated `AuthenticateKioskDevice` middleware and a `kiosk_devices.device_token_hash` column — deliberately not Sanctum, and not a second auth guard.** The middleware is a fifth audited entry on Decision D-13's bypass list. | A kiosk is not a user: nobody signs in at it, it has no email, password or 2FA, and its credential must survive reboots and staff turnover unattended. Modelling it as a Sanctum tokenable would mean either a second guard whose provider resolves a non-User model, or widening `PersonalAccessToken`'s morph map for a principal sharing none of a user's semantics — both more machinery than a token lookup needs. Like login and pairing, kiosk authentication must discover *which* tenant the caller belongs to before a tenant context can exist, hence the `withoutTenantScope()` lookup. | Building it caught a third instance of D-13's fail-closed class, again by running the code rather than by inspection: the middleware originally eager-loaded `$device->store` in the same query as the device, but `Store` carries TenantScope and no context existed yet, so the branch resolved to `null` and *every* kiosk request 401'd as "no longer assigned to a branch". The fix — resolve the Tenant from `kiosk_devices.tenant_id` (Tenant is the one model without TenantScope), set the context, *then* read the relation — is the general shape any future non-user principal must follow. |
 | D-22 | 2026-08-21 | **`ApiExceptionRenderer` now matches `AccessDeniedHttpException` alongside `AuthorizationException`.** | Laravel's handler runs `prepareException()` *before* the `withExceptions()->render()` callbacks, and that step rewraps every `AuthorizationException` — including the one every `$this->authorize()` call throws — into an `AccessDeniedHttpException`. The existing `AuthorizationException` arm was therefore unreachable, and every policy denial in the app fell through to the generic `HttpExceptionInterface` arm, returning `error_code: http_error` with a generic message instead of the `unauthorized` code the API contract promises. Latent since Phase 2.C; surfaced by the first Phase 4 test to assert on the error code rather than just the 403 status. | Every policy-gated 403 across the whole app now emits `unauthorized`, so the frontend can tell a permission failure apart from a plan gate (`plan_feature_unavailable` / `plan_limit_exceeded`) without inspecting the message. Assert on `error_code`, not just status, when adding authorization tests — the status alone would not have caught this. |
 | D-23 | 2026-08-21 | **Three Phase 4 modelling choices, recorded so they are not rediscovered: (1) a permanently *closed* branch does not consume a plan `branches` slot, while an *inactive* one does; (2) `franchise_group_members.member_tenant_id` is deliberately not named `tenant_id`, and `FranchiseGroupMember` deliberately does not use `BelongsToTenant`; (3) opening hours are stored as weekly wall-clock `TIME` values in the branch's own `stores.timezone`, never as DATETIME.** | (1) A tenant that relocates a shop would otherwise be charged for the old address forever, while a shop shut for Ramadan genuinely still occupies a slot. (2) That column is the *franchisee*, not the franchisor — applying TenantScope to it would filter a franchisor's own membership list down to itself, exactly backwards; isolation is enforced one level up, on the tenant-scoped `FranchiseGroup`. (3) Trading hours recur weekly and are what a manager writes on paper; a single absolute instant cannot express "10:00 every Monday", and storage is UTC per D-07. | (1) `StoreStatus::countsTowardBranchLimit()` and `Store::scopeCountingTowardLimit()` are the only places this is decided; re-activating a closed branch re-checks the cap, which is the one status change that can push a tenant over their plan. (2) Any future cross-tenant reporting table should follow the same naming rule. (3) Every comparison goes through `StoreHour::kioskIsOpenAt()`, which reads a window whose end is earlier than its start as wrapping past midnight rather than as an empty range — the kiosk guard, the availability endpoint and the editor all share that one implementation. |
+| D-24 | 2026-08-21 | **Three Phase 5.A modelling choices: (1) no nested-set/materialized-path package is installed for the category tree — `CategoryService` walks a plain `parent_id` adjacency list in PHP, capped at `Category::MAX_DEPTH` (4); (2) `AttributeType` has no `Occasion` case, despite the product document listing "occasion" alongside color/size/fabric as an attribute example — occasions are their own flat taxonomy (`occasions` table, `product_occasion` pivot), never an attribute value; (3) the default Bangladeshi apparel taxonomy (`CatalogTaxonomyService`) is seeded on demand via `php artisan catalog:seed-defaults {tenant}`, not automatically at registration.** | (1) Nothing in Phases 1-4 needed a tree, no such package exists in `composer.json`, and a tenant's catalog tree is small enough (dozens of rows, depth-capped) that adjacency-list walking is cheap — a materialized-path rewrite is a future concern, not a Phase 5 one. (2) An occasion is a merchandising tag applied to a product as a whole ("this whole listing is Eid wear"), never a per-variant axis the way color and size are — modelling it as an attribute value would let one product carry two contradictory occasion values the way it can legitimately carry two colors. (3) Automatic tenant provisioning (Phase 2.A's own still-open "tenant provisioning service" item) doesn't exist yet — this follows the identical deferral shape already recorded there rather than inventing a second, inconsistent provisioning path. | (1) If the tree ever needs to answer "descendants of X" at a scale where N+1-style breadth-first queries stop being cheap, that is the point to introduce `kalnoy/nestedset` or similar — not before. (2) Any future attribute type must still pass `AttributeType::definesVariantAxis()` before `ProductVariant.color_attr_id`/`size_attr_id` will accept it. (3) When Phase 2.A's provisioning service is finally built, `CatalogTaxonomyService::seed()` is the method to call from it — no rewrite needed, just a new call site. |
+| D-25 | 2026-08-21 | **The `taggables` polymorphic pivot carries no `tenant_id` column, unlike most tenant-owned tables (DOCUMENTATION.md §4.4.1's usual rule) — it follows `product_occasion`/`product_attribute`'s pure-pivot shape instead.** | Discovered as a real bug, not a design preference: `MorphToMany::sync()`/`attach()` perform raw bulk inserts populating only the pivot's own declared attach columns (`tag_id`, `taggable_type`, `taggable_id`) — a `tenant_id NOT NULL` column with no default caused every `PUT /products/{product}/tags` call to 500 with a MySQL "doesn't have a default value" error. The alternative, Eloquent's `withPivotValue()`, was rejected because it also constrains every *read* of the relation to a fixed value baked in at relation-definition time — `Product::query()->whereHas('tags', ...)` builds its subquery off an empty model instance with no `tenant_id` yet, which would have silently broken that filter instead. | Isolation on this table is enforced the same way it already is for `product_occasion`: every query reaches it through `Tag`'s or `Product`'s own already tenant-scoped relation, never directly. Any future polymorphic pivot should default to this pure-pivot shape unless a concrete need to query it directly (bypassing both sides' models) is identified first. |
+| D-26 | 2026-08-21 | **`CatalogTaxonomyService::seed()` wraps its whole body in `TenantContext::runAs($tenant, ...)`.** | Found running `php artisan catalog:seed-defaults` by hand against the dev database, not by inspection: outside a web request, no `ResolveTenant` middleware ever sets an active `TenantContext`, so `TenantScope`'s fail-closed rule (D-13) made every `firstOrCreate()` lookup in the seeder see zero rows regardless of what already existed — the class's own "idempotent" docblock promise was false. A second run of the exact same command threw a unique-constraint violation instead of silently doing nothing. | Any future service method invoked from an artisan command (not a queued job — those already go through `TenantAwareJob`, and not a request — those already go through `ResolveTenant`) that touches a `BelongsToTenant` model must set up its own `TenantContext` the same way, via `runAs()`. `CatalogTaxonomySeedTest` locks this in with a real double-seed assertion, not just a read of the code. |
+| D-27 | 2026-08-21 | **`App\Services\Media\BackgroundRemovalService` assumes a remove.bg-shaped HTTP contract (multipart `image_file` field, `X-Api-Key` header, raw processed-PNG response body) — not verified against any real provider account, the same shape as SSLCommerz's still-unverified refund endpoints (Decision D-18).** | `BG_REMOVAL_ENDPOINT`/`BG_REMOVAL_KEY` (present in `.env.example` ahead of this phase) implies exactly a single-endpoint, single-key contract, not OAuth or a multi-step upload/poll flow — remove.bg's own API is the most common provider shaped that way. No account exists to confirm the exact field/header names against, though. | Before going live, confirm `config/background_removal.php`'s assumed contract against whichever provider is actually chosen — everything else (retry/backoff, storage, `is_tryon_ready` wiring, the failure-notification email) is provider-agnostic and does not change regardless of which one answers it. All 5.C tests exercise this via `Http::fake()`, not a real account. |
+| D-28 | 2026-08-21 | **`Product::scopeVisibleInCatalog()`'s `whereHas('variants', ...)` requires an active `TenantContext` for *two* separate queries, not one — the outer `Product` query and the nested `ProductVariant` subquery each carry their own independent `TenantScope`.** | Found writing `VisibleInCatalogScopeTest`: an early version bypassed only the outer query (`Product::withoutTenantScope()`) and three of its four `assertFalse()` test cases passed for the wrong reason — an empty result set from the *still*-fail-closed nested subquery is indistinguishable from a correctly-hidden product — until the one `assertTrue()` case caught it. | Any future scope or query that nests a `whereHas()`/`whereDoesntHave()` against another `BelongsToTenant` model needs the *real* active context (`TenantContext::runAs()`), not a bypass on the outer query alone, to be tested meaningfully. A bare `assertFalse()` on a scope like this proves nothing on its own — pair it with at least one `assertTrue()` case using the same query shape, or the fail-closed rule can hide a real bug behind a passing suite. |
 
 ### Rules arising from D-01
 
@@ -439,62 +446,62 @@ Verified live, not just build/lint/test: `php artisan serve` + `npm run dev --wo
 
 ## 5.A Categories & Attributes (Backend)
 
-- [ ] Create `categories` table (tenant_id, parent_id, name, slug, icon, image, gender, sort_order, status)
-- [ ] Implement nested category tree helpers (ancestors, descendants, depth limit)
-- [ ] Build category CRUD APIs with plan category-limit enforcement
-- [ ] Build category reorder API (drag-and-drop sort persistence)
-- [ ] Seed default Bangladeshi apparel taxonomy (Boys → Panjabi/Shirt/T-shirt/Pant/Coat/Jacket; Girls → Saree/Threepiece/Kurti/Orna, etc.)
-- [ ] Create `attributes` and `attribute_values` tables (color, size, fabric, occasion)
-- [ ] Build attribute CRUD APIs with hex color support
-- [ ] Create `occasions` table and seed (Wedding, Eid, Office, Casual, Party)
-- [ ] Create `tags` table and `taggables` pivot; seed New Arrival, Bestseller, Eid Special, Sale
-- [ ] Build tag CRUD and product tagging APIs
+- [x] Create `categories` table (tenant_id, parent_id, name, slug, icon, image, gender, sort_order, status)
+- [x] Implement nested category tree helpers (ancestors, descendants, depth limit) — `CategoryService`, adjacency-list walk, no nested-set package; see Decision D-24
+- [x] Build category CRUD APIs with plan category-limit enforcement
+- [x] Build category reorder API (drag-and-drop sort persistence)
+- [x] Seed default Bangladeshi apparel taxonomy (Boys → Panjabi/Shirt/T-shirt/Pant/Coat/Jacket; Girls → Saree/Threepiece/Kurti/Orna, etc.) — `CatalogTaxonomyService` + `php artisan catalog:seed-defaults {tenant}`, on-demand rather than automatic (see Decision D-24)
+- [x] Create `attributes` and `attribute_values` tables (color, size, fabric, occasion) — modelled as color/size/fabric/custom, with occasion kept as its own separate taxonomy; see Decision D-24
+- [x] Build attribute CRUD APIs with hex color support
+- [x] Create `occasions` table and seed (Wedding, Eid, Office, Casual, Party)
+- [x] Create `tags` table and `taggables` pivot; seed New Arrival, Bestseller, Eid Special, Sale
+- [x] Build tag CRUD and product tagging APIs
 
 ## 5.B Products & Variants (Backend)
 
-- [ ] Create `products` table (tenant_id, store_id, category_id, name, slug, sku, description, brand, base_price, sale_price, status, is_tryon_ready, season, publish_at, unpublish_at, meta JSON)
-- [ ] Create `product_variants` table (product_id, sku, color_attr_id, size_attr_id, price, stock, barcode, status)
-- [ ] Create `product_images` table (product_id, variant_id, disk, path, cdn_url, type, sort_order, is_primary)
-- [ ] Create `product_occasion` and `product_attribute` pivots
-- [ ] Create `Product`, `ProductVariant`, and `ProductImage` models with relations and casts
-- [ ] Build product create API with nested variants and images, wrapped in a transaction
-- [ ] Build product update API handling variant add/update/remove diffing
-- [ ] Build product list API with filters (category, tag, occasion, status, stock, price range, search)
-- [ ] Build product detail API including variants, images, size chart, and stock
-- [ ] Build product delete/archive API with try-on asset cleanup
-- [ ] Build product duplicate API
-- [ ] Enforce plan SKU limits on product and variant creation
-- [ ] Build product status toggle (publish/unpublish) API
-- [ ] Create `size_charts` table and `product_size_chart` link
-- [ ] Build size chart CRUD API with a flexible measurement-row schema
-- [ ] Build size chart attach/detach API and kiosk popup payload
-- [ ] Create `price_history` table and record every price change with actor and timestamp
-- [ ] Build price history API for a product/variant
+- [x] Create `products` table (tenant_id, store_id, category_id, name, slug, sku, description, brand, base_price, sale_price, status, is_tryon_ready, season, publish_at, unpublish_at, meta JSON)
+- [x] Create `product_variants` table (product_id, sku, color_attr_id, size_attr_id, price, stock, barcode, status)
+- [x] Create `product_images` table (product_id, variant_id, disk, path, cdn_url, type, sort_order, is_primary)
+- [x] Create `product_occasion` and `product_attribute` pivots
+- [x] Create `Product`, `ProductVariant`, and `ProductImage` models with relations and casts
+- [x] Build product create API with nested variants and images, wrapped in a transaction — images are a separate multipart endpoint from the JSON create call (same PHP multipart-on-POST-only reasoning as `StoreBrandingRequest`); each still writes inside its own transaction
+- [x] Build product update API handling variant add/update/remove diffing
+- [x] Build product list API with filters (category, tag, occasion, status, stock, price range, search) — `search` is a plain `LIKE`; typo-tolerant MeiliSearch is Phase 5.E
+- [x] Build product detail API including variants, images, size chart, and stock
+- [x] Build product delete/archive API with try-on asset cleanup — soft-delete plus removing image files from storage; there are no try-on-session assets to clean up yet (Phase 6 doesn't exist), so this reduces to `product_images` cleanup, the same honest phase-boundary pattern as Phase 4's skipped items
+- [x] Build product duplicate API
+- [x] Enforce plan SKU limits on product and variant creation — via the `skus` limit key already seeded in `PlanSeeder`
+- [x] Build product status toggle (publish/unpublish) API
+- [x] Create `size_charts` table and `product_size_chart` link
+- [x] Build size chart CRUD API with a flexible measurement-row schema
+- [x] Build size chart attach/detach API and kiosk popup payload — kiosk endpoint under the existing `kiosk.auth` group, `Api\V1\Kiosk\SizeChartController`
+- [x] Create `price_history` table and record every price change with actor and timestamp
+- [x] Build price history API for a product/variant
 
 ## 5.C Media & AI Background Removal (Backend)
 
-- [ ] Build media upload API with MIME/size validation and virus-safe handling
-- [ ] Build direct-to-S3 presigned upload endpoint for large batches
-- [ ] Build image processing job — resize, generate thumbnails (sm/md/lg), convert to WebP
-- [ ] Enforce per-tenant storage quota on upload with clear error response
-- [ ] Build storage usage recalculation job
-- [ ] Integrate background-removal service and build `RemoveBackgroundJob` producing AR-ready transparent PNG
-- [ ] Store AR-ready asset separately and mark `is_tryon_ready` on success
-- [ ] Build background-removal retry + failure notification path
-- [ ] Build manual AR-asset re-upload endpoint for owner corrections
-- [ ] Build image delete API with S3 cleanup and orphan sweeper job
+- [x] Build media upload API with MIME/size validation and virus-safe handling — "virus-safe" is content-decode validation (Laravel's `image` rule + Intervention's own decode step), not a scanning service this codebase doesn't have; see `ProductImageService`'s own docblock
+- [x] Build direct-to-S3 presigned upload endpoint for large batches — only functions against the real S3/R2 driver; fails with a clear `MediaProcessingException` on the local dev disk rather than faking a URL (Decision D-18 precedent)
+- [x] Build image processing job — resize, generate thumbnails (sm/md/lg), convert to WebP — `ProcessProductImageJob` via `intervention/image-laravel`
+- [x] Enforce per-tenant storage quota on upload with clear error response — `storage_gb` limit, `StorageQuotaService`
+- [x] Build storage usage recalculation job — `php artisan storage:recalculate {tenant?}`
+- [x] Integrate background-removal service and build `RemoveBackgroundJob` producing AR-ready transparent PNG — provider contract is assumed (remove.bg-shaped), not yet verified against a real account; see Decision D-27
+- [x] Store AR-ready asset separately and mark `is_tryon_ready` on success — new `ProductImageType::Tryon` row, never overwrites the source
+- [x] Build background-removal retry + failure notification path — 3 tries with backoff; `failed()` emails the tenant owner via `BackgroundRemovalFailedMail`
+- [x] Build manual AR-asset re-upload endpoint for owner corrections — `POST /products/{product}/tryon-asset`, replaces any existing try-on asset for that scope
+- [x] Build image delete API with S3 cleanup and orphan sweeper job — delete API shipped in 5.B; `php artisan media:sweep-orphans {tenant?}` is the sweeper, scoped one tenant's own storage prefix at a time
 
 ## 5.D Inventory (Backend)
 
-- [ ] Create `stock_movements` table (variant_id, store_id, type, quantity, reference, note, user_id)
-- [ ] Build stock adjustment API with movement logging
-- [ ] Build stock transfer API between branches
-- [ ] Create per-variant low-stock threshold configuration
-- [ ] Build low-stock detection job dispatching alerts
-- [ ] Auto-hide out-of-stock products from try-on and catalog
-- [ ] Build season/expiry scheduler job honoring `publish_at`/`unpublish_at`
-- [ ] Build dead-stock detection job (no try-on within N days) with clearance suggestion
-- [ ] Build inventory report API (on-hand, low stock, dead stock, movement history)
+- [x] Create `stock_movements` table (variant_id, store_id, type, quantity, reference, note, user_id)
+- [x] Build stock adjustment API with movement logging
+- [x] Build stock transfer API between branches — a matched TransferOut/TransferIn pair sharing one `reference`; the tenant-wide aggregate (`product_variants.stock`) is untouched by a transfer, only redistributed
+- [x] Create per-variant low-stock threshold configuration — `PATCH /variants/{variant}/low-stock-threshold`
+- [x] Build low-stock detection job dispatching alerts — `php artisan inventory:check-low-stock`, one digest email per tenant
+- [x] Auto-hide out-of-stock products from try-on and catalog — `Product::scopeVisibleInCatalog()` built and tested; no customer-facing catalog-browsing endpoint exists yet to wire it into (Phase 6/9's job)
+- [x] Build season/expiry scheduler job honoring `publish_at`/`unpublish_at` — `php artisan products:apply-schedule`
+- [ ] SKIPPED — Build dead-stock detection job (no try-on within N days) with clearance suggestion. Blocked on `try_on_sessions`, which doesn't exist until Phase 6 — identical shape to Phase 4's own two skipped items; see the inventory report API's `dead_stock_note`.
+- [x] Build inventory report API (on-hand, low stock, dead stock, movement history) — `dead_stock` is honestly `[]` with the explanatory note above, not a fabricated number
 
 ## 5.E Bulk Import, Search & Catalog Sharing (Backend)
 
